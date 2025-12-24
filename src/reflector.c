@@ -1,0 +1,399 @@
+﻿// RFC 8762 STAMP Reflector実装
+// Senderからのパケットを受信し、タイムスタンプを付けて返送する
+
+#include "stamp.h"
+#include <sys/types.h>
+#ifdef _WIN32
+#include <mswsock.h>
+#endif
+
+#define PORT STAMP_PORT // STAMP標準ポート番号
+
+// エラーメッセージ出力用マクロ
+#define PRINT_SOCKET_ERROR(msg) fprintf(stderr, "%s: error %d\n", msg, SOCKET_ERRNO)
+
+// セッション統計情報
+struct session_stats
+{
+	uint32_t packets_reflected;
+	uint32_t packets_dropped;
+};
+
+static struct session_stats g_stats = {0, 0};
+
+static void print_usage(const char *prog)
+{
+	fprintf(stderr, "Usage: %s [port]\n", prog ? prog : "reflector");
+}
+
+static int parse_port(const char *arg, uint16_t *port)
+{
+	char *end = NULL;
+	unsigned long value;
+
+	if (!arg || !port)
+	{
+		return -1;
+	}
+
+	value = strtoul(arg, &end, 10);
+	if (*arg == '\0' || (end && *end != '\0') || value == 0 || value > 65535)
+	{
+		return -1;
+	}
+
+	*port = (uint16_t)value;
+	return 0;
+}
+
+#ifdef _WIN32
+static LPFN_WSARECVMSG g_wsa_recvmsg = NULL;
+
+static void init_wsa_recvmsg(int sockfd)
+{
+	DWORD bytes = 0;
+	GUID guid = WSAID_WSARECVMSG;
+
+	if (WSAIoctl(sockfd, SIO_GET_EXTENSION_FUNCTION_POINTER,
+				 &guid, sizeof(guid),
+				 &g_wsa_recvmsg, sizeof(g_wsa_recvmsg),
+				 &bytes, NULL, NULL) == SOCKET_ERROR)
+	{
+		g_wsa_recvmsg = NULL;
+	}
+}
+#endif
+
+/**
+ * リスニングソケットの初期化 (RFC 8762 Section 3)
+ * @return ソケットディスクリプタ、エラー時-1
+ */
+static int init_reflector_socket(uint16_t port)
+{
+	SOCKET sockfd;
+	struct sockaddr_in servaddr;
+	int opt = 1;
+
+	// UDPソケットの作成
+	sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (SOCKET_ERROR_CHECK(sockfd))
+	{
+		PRINT_SOCKET_ERROR("socket creation failed");
+		return -1;
+	}
+
+	// SO_REUSEADDRオプションの設定
+	if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR,
+				   (const char *)&opt, sizeof(opt)) < 0)
+	{
+		PRINT_SOCKET_ERROR("setsockopt SO_REUSEADDR failed");
+		CLOSE_SOCKET(sockfd);
+		return -1;
+	}
+
+	// 受信TTL取得の有効化 (可能な場合)
+#ifdef IP_RECVTTL
+	int recv_ttl = 1;
+	(void)setsockopt(sockfd, IPPROTO_IP, IP_RECVTTL,
+					 (const char *)&recv_ttl, sizeof(recv_ttl));
+#endif
+
+	// サーバーアドレスの設定
+	memset(&servaddr, 0, sizeof(servaddr));
+	servaddr.sin_family = AF_INET;
+	servaddr.sin_addr.s_addr = INADDR_ANY;
+	servaddr.sin_port = htons(port);
+
+	// バインド
+	if (bind(sockfd, (const struct sockaddr *)&servaddr, sizeof(servaddr)) < 0)
+	{
+		PRINT_SOCKET_ERROR("bind failed");
+		CLOSE_SOCKET(sockfd);
+		return -1;
+	}
+
+	return sockfd;
+}
+
+/**
+ * STAMPパケットの反射処理 (RFC 8762 Section 4.3.1)
+ * Session-Reflector Stateless Mode
+ * @param sockfd ソケットディスクリプタ
+ * @param packet 受信パケットのポインタ
+ * @param cliaddr クライアントアドレス
+ * @param len クライアントアドレス構造体のサイズ
+ * @param ttl_ipv4 IPv4 TTL値（IPv4の場合）、またはipv6_hop_limit IPv6 Hop Limit値
+ * @return 成功時0、エラー時-1
+ */
+static int reflect_packet(int sockfd, uint8_t *buffer, int send_len,
+						  const struct sockaddr_in *cliaddr, socklen_t len, uint8_t ttl)
+{
+	struct stamp_sender_packet sender;
+	struct stamp_reflector_packet *packet;
+	uint32_t t2_sec, t2_frac, t3_sec, t3_frac;
+
+	memset(&sender, 0, sizeof(sender));
+	if (send_len > 0)
+	{
+		int copy_len = send_len < (int)sizeof(sender) ? send_len : (int)sizeof(sender);
+		memcpy(&sender, buffer, copy_len);
+	}
+
+	// T2: 受信時刻の取得 (RFC 8762 Section 4.3.1)
+	if (get_ntp_timestamp(&t2_sec, &t2_frac) != 0)
+	{
+		fprintf(stderr, "Failed to get T2 timestamp\n");
+		return -1;
+	}
+
+	packet = (struct stamp_reflector_packet *)buffer;
+
+	// Session-Senderの情報を保存（reflectorパケット用）
+	packet->seq_num = sender.seq_num;		 // Seq Numをコピー（stateless mode）
+	packet->sender_seq_num = sender.seq_num; // Session-Sender Sequence Number
+	packet->sender_ts_sec = sender.timestamp_sec;
+	packet->sender_ts_frac = sender.timestamp_frac;
+	packet->sender_err_est = sender.error_estimate;
+	packet->sender_ttl = ttl; // TTL/Hop Limitをコピー（RFC 4.3.1）
+
+	// Reflectorタイムスタンプを記録
+	packet->rx_sec = t2_sec; // Receive Timestamp
+	packet->rx_frac = t2_frac;
+	packet->error_estimate = htons(0);
+	packet->mbz_1 = 0; // MBZフィールド
+	packet->mbz_2 = 0; // MBZフィールド
+	memset(packet->mbz_3, 0, sizeof(packet->mbz_3));
+
+	// T3: 送信時刻の取得
+	if (get_ntp_timestamp(&t3_sec, &t3_frac) != 0)
+	{
+		fprintf(stderr, "Failed to get T3 timestamp\n");
+		return -1;
+	}
+
+	// Reflectorの送信タイムスタンプ
+	packet->timestamp_sec = t3_sec;
+	packet->timestamp_frac = t3_frac;
+
+	// パケットの返送
+	if (sendto(sockfd, (const char *)buffer, send_len, 0,
+			   (const struct sockaddr *)cliaddr, len) < 0)
+	{
+		PRINT_SOCKET_ERROR("sendto failed");
+		g_stats.packets_dropped++;
+		return -1;
+	}
+
+	g_stats.packets_reflected++;
+	return 0;
+}
+
+static int recv_stamp_packet(int sockfd, uint8_t *buffer, int buffer_len,
+							 struct sockaddr_in *cliaddr, socklen_t *len, uint8_t *ttl)
+{
+#ifdef _WIN32
+	if (ttl)
+	{
+		*ttl = 0;
+	}
+
+	if (g_wsa_recvmsg == NULL)
+	{
+		return recvfrom(sockfd, (char *)buffer, buffer_len, 0, (struct sockaddr *)cliaddr, len);
+	}
+
+	WSABUF data_buf;
+	WSAMSG msg;
+	char control[WSA_CMSG_SPACE(sizeof(int))];
+	DWORD bytes = 0;
+
+	data_buf.buf = (CHAR *)buffer;
+	data_buf.len = (ULONG)buffer_len;
+	memset(&msg, 0, sizeof(msg));
+	msg.name = (LPSOCKADDR)cliaddr;
+	msg.namelen = *len;
+	msg.lpBuffers = &data_buf;
+	msg.dwBufferCount = 1;
+	msg.Control.buf = control;
+	msg.Control.len = sizeof(control);
+
+	if (g_wsa_recvmsg(sockfd, &msg, &bytes, NULL, NULL) == SOCKET_ERROR)
+	{
+		return -1;
+	}
+
+	*len = msg.namelen;
+	if (ttl)
+	{
+		WSACMSGHDR *cmsg;
+		for (cmsg = WSA_CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = WSA_CMSG_NXTHDR(&msg, cmsg))
+		{
+			if (cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_TTL)
+			{
+				int recv_ttl;
+				memcpy(&recv_ttl, WSA_CMSG_DATA(cmsg), sizeof(recv_ttl));
+				if (recv_ttl >= 0 && recv_ttl <= 255)
+				{
+					*ttl = (uint8_t)recv_ttl;
+				}
+			}
+		}
+	}
+
+	return (int)bytes;
+#else
+	struct msghdr msg;
+	struct iovec iov;
+	char control[CMSG_SPACE(sizeof(int))];
+	int n;
+
+	if (ttl)
+	{
+		*ttl = 0;
+	}
+
+	memset(&msg, 0, sizeof(msg));
+	iov.iov_base = buffer;
+	iov.iov_len = (size_t)buffer_len;
+	msg.msg_name = cliaddr;
+	msg.msg_namelen = *len;
+	msg.msg_iov = &iov;
+	msg.msg_iovlen = 1;
+	msg.msg_control = control;
+	msg.msg_controllen = sizeof(control);
+
+	n = recvmsg(sockfd, &msg, 0);
+	if (n < 0)
+	{
+		return -1;
+	}
+
+	*len = msg.msg_namelen;
+	if (ttl)
+	{
+		struct cmsghdr *cmsg;
+		for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg))
+		{
+			if (cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_TTL)
+			{
+				int recv_ttl;
+				memcpy(&recv_ttl, CMSG_DATA(cmsg), sizeof(recv_ttl));
+				if (recv_ttl >= 0 && recv_ttl <= 255)
+				{
+					*ttl = (uint8_t)recv_ttl;
+				}
+			}
+		}
+	}
+
+	return n;
+#endif
+}
+
+int main(int argc, char *argv[])
+{
+	int sockfd;
+	struct sockaddr_in cliaddr;
+	uint8_t buffer[STAMP_MAX_PACKET_SIZE];
+	socklen_t len;
+	uint16_t port = PORT;
+
+#ifdef _WIN32
+	// Windows: ソケット初期化
+	WSADATA wsaData;
+	if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
+	{
+		fprintf(stderr, "WSAStartup failed\n");
+		return 1;
+	}
+#endif
+
+	if (argc > 2)
+	{
+		print_usage(argc > 0 ? argv[0] : "reflector");
+		return 1;
+	}
+
+	if (argc > 1 && parse_port(argv[1], &port) != 0)
+	{
+		fprintf(stderr, "Invalid port: %s\n", argv[1]);
+		print_usage(argc > 0 ? argv[0] : "reflector");
+		return 1;
+	}
+
+#ifndef _WIN32
+	if (geteuid() != 0)
+	{
+		fprintf(stderr, "Warning: reflector is not running with sudo/root privileges; binding to privileged ports may fail.\n");
+	}
+#endif
+
+	// ソケットの初期化
+	sockfd = init_reflector_socket(port);
+	if (sockfd < 0)
+	{
+#ifdef _WIN32
+		WSACleanup();
+#endif
+		return 1;
+	}
+
+#ifdef _WIN32
+	init_wsa_recvmsg(sockfd);
+#endif
+
+	printf("STAMP Reflector listening on port %u...\n", port);
+
+	// メインループ
+	while (1)
+	{
+		uint8_t ttl = 0;
+		int n;
+		int send_len;
+
+		len = sizeof(cliaddr);
+		n = recv_stamp_packet(sockfd, buffer, sizeof(buffer), &cliaddr, &len, &ttl);
+
+		if (n < 0)
+		{
+			PRINT_SOCKET_ERROR("recvfrom failed");
+			continue;
+		}
+		if (n == 0)
+		{
+			continue;
+		}
+
+		// パケットサイズが小さい場合はベースサイズに拡張
+		send_len = n;
+		if (send_len < STAMP_BASE_PACKET_SIZE)
+		{
+			memset(buffer + send_len, 0, STAMP_BASE_PACKET_SIZE - send_len);
+			send_len = STAMP_BASE_PACKET_SIZE;
+		}
+
+		// パケットの反射処理
+		if (reflect_packet(sockfd, buffer, send_len, &cliaddr, len, ttl) == 0)
+		{
+			const struct stamp_reflector_packet *packet =
+				(const struct stamp_reflector_packet *)buffer;
+			printf("Reflected packet Seq: %lu from %s:%d (TTL: %d)\n",
+				   ntohl(packet->sender_seq_num),
+				   inet_ntoa(cliaddr.sin_addr),
+				   ntohs(cliaddr.sin_port),
+				   ttl);
+		}
+	}
+
+	// 統計情報表示（到達不可）
+	printf("\n--- STAMP Reflector Statistics ---\n");
+	printf("Packets reflected: %u\n", g_stats.packets_reflected);
+	printf("Packets dropped: %u\n", g_stats.packets_dropped);
+
+	// クリーンアップ
+	CLOSE_SOCKET(sockfd);
+#ifdef _WIN32
+	WSACleanup();
+#endif
+	return 0;
+}

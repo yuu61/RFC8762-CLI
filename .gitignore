@@ -1,0 +1,48 @@
+# Build artifacts
+/build/
+*.o
+*.obj
+*.dll
+*.exe
+*.so
+*.dylib
+*.a
+*.lib
+*.lo
+*.la
+*.pch
+*.out
+*.pdb
+*.ilk
+*.idb
+*.exp
+
+# Coverage and test outputs
+*.gcno
+*.gcda
+*.gcov
+coverage/
+/tests/*.log
+/tests/*.tmp
+
+# Editor/OS noise
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Tooling
+/.vscode/
+/.vs/
+*.user
+*.code-workspace
+
+# Tool metadata
+compile_commands.json
+*.clangd
+*.clang-tidy
+
+# Dependency caches
+.ccls-cache/
+.cache/
