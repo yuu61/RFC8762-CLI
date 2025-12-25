@@ -261,6 +261,7 @@ static int receive_and_process_packet(int sockfd, const struct stamp_sender_pack
     double forward_delay = (t2 - t1) * 1000.0;
     double backward_delay = (t4 - t3) * 1000.0;
     double rtt = forward_delay + backward_delay;
+    double offset = ((t2 - t1) + (t3 - t4)) * 0.5 * 1000.0;
 
     // 異常値のチェック
     if (forward_delay < 0 || backward_delay < 0)
@@ -278,8 +279,8 @@ static int receive_and_process_packet(int sockfd, const struct stamp_sender_pack
         g_stats.max_rtt = rtt;
 
     // 結果の表示
-    printf("%" PRIu32 "\t%.3f\t\t%.3f\t\t%.3f\n",
-           (uint32_t)ntohl(rx_packet.sender_seq_num), forward_delay, backward_delay, rtt);
+    printf("%" PRIu32 "\t%.3f\t\t%.3f\t\t%.3f\t\t%.3f\n",
+           (uint32_t)ntohl(rx_packet.sender_seq_num), forward_delay, backward_delay, rtt, offset);
 
     return 0;
 }
@@ -336,8 +337,8 @@ int main(int argc, char *argv[])
     // 測定開始メッセージの表示
     printf("STAMP Sender targeting %s:%u\n", ip, port);
     printf("Press Ctrl+C to stop and show statistics\n");
-    printf("Seq\tForward(ms)\tBackward(ms)\tRTT(ms)\n");
-    printf("----------------------------------------------------\n");
+    printf("Seq\tForward(ms)\tBackward(ms)\tRTT(ms)\tOffset(ms)\n");
+    printf("----------------------------------------------------------------\n");
 
     // メインループ
     while (g_running)
