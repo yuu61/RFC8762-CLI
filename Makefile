@@ -52,7 +52,7 @@ all: $(BUILD_DIR) $(TARGETS)
 
 # Create build directory
 $(BUILD_DIR):
-	@-mkdir build 2>nul || true
+  @$(MKDIR)
 
 # Build reflector
 $(BUILD_DIR)/reflector: $(REFLECTOR_SRC) $(HEADERS) | $(BUILD_DIR)
@@ -72,7 +72,7 @@ $(TEST_TARGET): $(TEST_SRC) $(HEADERS) | $(BUILD_DIR)
 
 # Clean build artifacts
 clean:
-	@powershell -Command "Remove-Item -Recurse -Force 'build' -ErrorAction SilentlyContinue" || true
+  @$(RM)
 
 # Phony targets
 .PHONY: all test clean
