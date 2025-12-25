@@ -239,7 +239,7 @@ static int receive_and_process_packet(int sockfd, const struct stamp_sender_pack
     // シーケンス番号の確認
     if (rx_packet.sender_seq_num != tx_packet->seq_num)
     {
-        fprintf(stderr, "Sequence number mismatch: expected %lu, got %lu\n",
+        fprintf(stderr, "Sequence number mismatch: expected %" PRIu32 ", got %" PRIu32 "\n",
                 ntohl(tx_packet->seq_num), ntohl(rx_packet.sender_seq_num));
         return -1;
     }
@@ -269,7 +269,7 @@ static int receive_and_process_packet(int sockfd, const struct stamp_sender_pack
         g_stats.max_rtt = rtt;
 
     // 結果の表示
-    printf("%lu\t%.3f\t\t%.3f\t\t%.3f\n",
+    printf("%" PRIu32 "\t%.3f\t\t%.3f\t\t%.3f\n",
            ntohl(rx_packet.sender_seq_num), forward_delay, backward_delay, rtt);
 
     return 0;

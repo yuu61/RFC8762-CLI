@@ -377,7 +377,7 @@ int main(int argc, char *argv[])
 		{
 			const struct stamp_reflector_packet *packet =
 				(const struct stamp_reflector_packet *)buffer;
-			printf("Reflected packet Seq: %lu from %s:%d (TTL: %d)\n",
+			printf("Reflected packet Seq: %" PRIu32 " from %s:%d (TTL: %d)\n",
 				   ntohl(packet->sender_seq_num),
 				   inet_ntoa(cliaddr.sin_addr),
 				   ntohs(cliaddr.sin_port),
