@@ -5,10 +5,8 @@ CFLAGS ?= -std=c2x -Wall -Wextra
 LDFLAGS ?=
 LDLIBS ?= -lm
 
-UNAME_S :=
-ifneq ($(OS),Windows_NT)
-  UNAME_S := $(shell uname -s 2>/dev/null)
-endif
+UNAME_S := $(shell uname -s 2>/dev/null)
+
 ifeq ($(OS),Windows_NT)
   LDLIBS += -lws2_32 -lmswsock
   MKDIR = if not exist $(subst /,\,$(BUILD_DIR)) mkdir $(subst /,\,$(BUILD_DIR))
