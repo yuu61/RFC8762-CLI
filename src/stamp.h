@@ -15,6 +15,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <inttypes.h>
+#include <stdbool.h>
 #include <time.h>
 
 // プラットフォーム固有のヘッダーとライブラリ

@@ -12,6 +12,7 @@
 
 // グローバル変数（シグナルハンドラからアクセス）
 static volatile int g_running = 1;
+static bool g_negative_delay_seen = false;
 
 // 統計情報構造体
 struct stats
@@ -63,7 +64,14 @@ static void print_statistics(void)
     if (g_stats.received > 0)
     {
         printf("RTT min/avg/max = %.3f/%.3f/%.3f ms\n",
-               g_stats.min_rtt, g_stats.sum_rtt / g_stats.received, g_stats.max_rtt);
+            g_stats.min_rtt, g_stats.sum_rtt / g_stats.received, g_stats.max_rtt);
+    }
+    if (g_negative_delay_seen)
+    {
+        fprintf(stderr, "\nWarning: A negative delay was detected.\n");
+        fprintf(stderr, "This typically indicates system clock skew.\n");
+        fprintf(stderr, "Please ensure time synchronization is active on your system.\n");
+        fprintf(stderr, "Tools: Windows (w32tm), Linux (chronyc/timedatectl), macOS (sntp).\n");
     }
 }
 
@@ -258,6 +266,7 @@ static int receive_and_process_packet(int sockfd, const struct stamp_sender_pack
     if (forward_delay < 0 || backward_delay < 0)
     {
         fprintf(stderr, "Warning: Negative delay detected (clock skew?)\n");
+        g_negative_delay_seen = true;
     }
 
     // 統計情報の更新
