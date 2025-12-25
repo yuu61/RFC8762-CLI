@@ -64,7 +64,7 @@ static void print_statistics(void)
     if (g_stats.received > 0)
     {
         printf("RTT min/avg/max = %.3f/%.3f/%.3f ms\n",
-            g_stats.min_rtt, g_stats.sum_rtt / g_stats.received, g_stats.max_rtt);
+               g_stats.min_rtt, g_stats.sum_rtt / g_stats.received, g_stats.max_rtt);
     }
     if (g_negative_delay_seen)
     {
@@ -248,7 +248,7 @@ static int receive_and_process_packet(int sockfd, const struct stamp_sender_pack
     if (rx_packet.sender_seq_num != tx_packet->seq_num)
     {
         fprintf(stderr, "Sequence number mismatch: expected %" PRIu32 ", got %" PRIu32 "\n",
-                ntohl(tx_packet->seq_num), ntohl(rx_packet.sender_seq_num));
+                (uint32_t)ntohl(tx_packet->seq_num), (uint32_t)ntohl(rx_packet.sender_seq_num));
         return -1;
     }
 
@@ -279,7 +279,7 @@ static int receive_and_process_packet(int sockfd, const struct stamp_sender_pack
 
     // 結果の表示
     printf("%" PRIu32 "\t%.3f\t\t%.3f\t\t%.3f\n",
-           ntohl(rx_packet.sender_seq_num), forward_delay, backward_delay, rtt);
+           (uint32_t)ntohl(rx_packet.sender_seq_num), forward_delay, backward_delay, rtt);
 
     return 0;
 }
