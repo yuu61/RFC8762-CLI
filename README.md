@@ -83,13 +83,19 @@ rm -rf build/
 
 **出力例:**
 ```
-Seq=1, RTT=0.234 ms
-Seq=2, RTT=0.256 ms
-Seq=3, RTT=0.223 ms
+STAMP Sender targeting 127.0.0.1:862
+Press Ctrl+C to stop and show statistics
+Seq  Fwd(ms)   Bwd(ms)   RTT(ms)  Offset(ms)  [adj_Fwd]  [adj_Bwd]
+--------------------------------------------------------------------------------------------
+0    0.152     0.148     0.300    0.002       0.150      0.150
+1    0.145     0.155     0.300    -0.005      0.150      0.150
+2    0.148     0.152     0.300    -0.002      0.150      0.150
 ^C
---- Statistics ---
-Sent: 3, Received: 3, Timeouts: 0
-Min RTT: 0.223 ms, Max RTT: 0.256 ms, Avg RTT: 0.238 ms
+--- STAMP Statistics ---
+Packets sent: 3
+Packets received: 3
+Packet loss: 0.00%
+RTT min/avg/max = 0.300/0.300/0.300 ms
 ```
 
 ### 基本的なコマンド
@@ -142,6 +148,20 @@ RFC8762/
 
 - NTPフォーマット（1900年1月1日からの経過時間）を使用
 - 高精度タイマーを利用（Windows: QueryPerformanceCounter、UNIX: clock_gettime）
+
+### 出力カラムの説明
+
+| カラム | 説明 |
+|--------|------|
+| Seq | シーケンス番号 |
+| Fwd(ms) | 往路遅延（Sender → Reflector） |
+| Bwd(ms) | 復路遅延（Reflector → Sender） |
+| RTT(ms) | 往復遅延（Fwd + Bwd） |
+| Offset(ms) | クロックオフセット（Reflectorの時計のずれ） |
+| [adj_Fwd] | オフセット補正した往路遅延（参考値） |
+| [adj_Bwd] | オフセット補正した復路遅延（参考値） |
+
+**補正値の意味**: SenderとReflectorの時計が完全に同期していない場合、Fwd/Bwdの値は非対称になります。`[adj_Fwd]`と`[adj_Bwd]`は、クロックオフセットを考慮した推定値で、理想的には対称な値になります。
 
 ### ポート番号
 
