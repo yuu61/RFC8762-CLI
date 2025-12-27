@@ -27,7 +27,7 @@ STAMPは、ネットワークの性能測定を行うための標準化された
 
 - C コンパイラ (GCC, Clang, MSVC など)
 - C2x 標準サポート
-- make ユーティリティ
+- CMake 3.16 以上
 
 ### プラットフォーム別の依存関係
 
@@ -37,15 +37,18 @@ STAMPは、ネットワークの性能測定を行うための標準化された
 
 ## ビルド方法
 
-### 基本的なビルド
+### Debug ビルド
 
 ```bash
-make
+cmake --preset debug
+cmake --build --preset debug
 ```
 
-**Windows環境の場合:**
-```powershell
-make CC=gcc
+### Release ビルド
+
+```bash
+cmake --preset release
+cmake --build --preset release
 ```
 
 実行ファイルは `build/` ディレクトリに生成されます：
@@ -55,23 +58,13 @@ make CC=gcc
 ### テストの実行
 
 ```bash
-make test
-```
-
-**Windows環境の場合:**
-```powershell
-make CC=gcc test
+ctest --preset test
 ```
 
 ### クリーンアップ
 
 ```bash
-make clean
-```
-
-**Windows環境の場合:**
-```powershell
-make CC=gcc clean
+rm -rf build/
 ```
 
 ## 使い方
@@ -121,7 +114,8 @@ Min RTT: 0.223 ms, Max RTT: 0.256 ms, Avg RTT: 0.238 ms
 
 ```
 RFC8762/
-├── Makefile              # ビルドファイル
+├── CMakeLists.txt        # CMake ビルド設定
+├── CMakePresets.json     # CMake プリセット
 ├── README.md             # このファイル
 ├── build/                # ビルド成果物（自動生成）
 ├── docs/
@@ -162,7 +156,7 @@ RFC8762/
 - MinGW-w64またはMSVCを使用してください
 
 **ビルドエラー: `undefined reference to clock_gettime`**
-- Linuxでは `-lrt` オプションが必要です（Makefileに含まれています）
+- Linuxでは `librt-dev` パッケージが必要です（CMakeが自動でリンクします）
 
 **実行エラー: `bind: Address already in use`**
 - 別のReflectorが実行中です。ポート番号を変更してください

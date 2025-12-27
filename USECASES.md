@@ -164,7 +164,6 @@ fatal error: winsock2.h: No such file or directory
 
 **対処法:**
 - MinGW-w64またはMSVCを使用
-- `make CC=gcc` でビルド
 
 **症状 (Linux):**
 ```
@@ -172,5 +171,12 @@ undefined reference to clock_gettime
 ```
 
 **対処法:**
-- `-lrt` オプションが必要（Makefileに含まれています）
-- 古いシステムでは `librt-dev` パッケージをインストール
+- 古いシステムでは `librt-dev` パッケージをインストール（CMakeが自動でリンクします）
+
+**症状:**
+```
+CMake Error: Could not find CMAKE_PROJECT_VERSION
+```
+
+**対処法:**
+- CMake 3.16以上をインストール
