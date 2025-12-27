@@ -189,7 +189,7 @@ static int reflect_packet(int sockfd, uint8_t *buffer, int send_len,
 	// Reflectorタイムスタンプを記録
 	packet->rx_sec = t2_sec; // Receive Timestamp
 	packet->rx_frac = t2_frac;
-	packet->error_estimate = htons(0);
+	packet->error_estimate = htons(ERROR_ESTIMATE_DEFAULT);
 	packet->mbz_1 = 0; // MBZフィールド
 	packet->mbz_2 = 0; // MBZフィールド
 	memset(packet->mbz_3, 0, sizeof(packet->mbz_3));

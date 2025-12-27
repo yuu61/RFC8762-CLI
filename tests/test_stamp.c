@@ -55,6 +55,14 @@ static void test_constants(void)
     EXPECT_TRUE(STAMP_MAX_PACKET_SIZE >= STAMP_BASE_PACKET_SIZE,
                 "STAMP_MAX_PACKET_SIZE >= STAMP_BASE_PACKET_SIZE");
     EXPECT_EQ_ULL(NTP_OFFSET, 2208988800UL, "NTP_OFFSET");
+
+    // Error Estimate constants (RFC 4656 Section 4.1.2)
+    EXPECT_EQ_ULL(ERROR_ESTIMATE_S_BIT, 0x8000, "ERROR_ESTIMATE_S_BIT");
+    EXPECT_EQ_ULL(ERROR_ESTIMATE_Z_BIT, 0x4000, "ERROR_ESTIMATE_Z_BIT");
+    EXPECT_EQ_ULL(ERROR_ESTIMATE_DEFAULT & ERROR_ESTIMATE_S_BIT, 0x8000,
+                  "ERROR_ESTIMATE_DEFAULT has S=1");
+    EXPECT_EQ_ULL(ERROR_ESTIMATE_DEFAULT & ERROR_ESTIMATE_Z_BIT, 0,
+                  "ERROR_ESTIMATE_DEFAULT has Z=0 (NTP)");
 }
 
 static void test_struct_layout(void)
@@ -83,6 +91,8 @@ static void test_struct_layout(void)
                   "reflector.error_estimate offset");
     EXPECT_EQ_ULL(offsetof(struct stamp_reflector_packet, rx_sec), 16,
                   "reflector.rx_sec offset");
+    EXPECT_EQ_ULL(offsetof(struct stamp_reflector_packet, rx_frac), 20,
+                  "reflector.rx_frac offset");
     EXPECT_EQ_ULL(offsetof(struct stamp_reflector_packet, sender_seq_num), 24,
                   "reflector.sender_seq_num offset");
     EXPECT_EQ_ULL(offsetof(struct stamp_reflector_packet, sender_err_est), 36,

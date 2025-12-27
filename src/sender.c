@@ -171,7 +171,7 @@ static int send_stamp_packet(int sockfd, uint32_t seq, const struct sockaddr_in 
     // パケットの初期化（RFC 4.2.1 準拠）
     memset(tx_packet, 0, sizeof(*tx_packet));
     tx_packet->seq_num = htonl(seq);
-    tx_packet->error_estimate = htons(0); // MBZ フィールドは既に0で初期化
+    tx_packet->error_estimate = htons(ERROR_ESTIMATE_DEFAULT);
     // T1: 送信時刻の取得
     if (get_ntp_timestamp(&t1_sec, &t1_frac) != 0)
     {
