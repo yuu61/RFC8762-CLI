@@ -60,6 +60,17 @@ typedef int SOCKET;
 #define SOCKET_TIMEOUT_SEC 5
 #define SOCKET_TIMEOUT_USEC 0
 
+// Error Estimate フィールド (RFC 8762 Section 4.2.1, RFC 4656 Section 4.1.2)
+// Format: |S|Z|Scale(6bits)|Multiplier(8bits)|
+#define ERROR_ESTIMATE_S_BIT      0x8000  // Synchronized flag (bit 15)
+#define ERROR_ESTIMATE_Z_BIT      0x4000  // Timestamp format: 0=NTP, 1=PTP (bit 14)
+#define ERROR_ESTIMATE_SCALE_MASK 0x3F00  // Scale field (bits 8-13)
+#define ERROR_ESTIMATE_MULT_MASK  0x00FF  // Multiplier field (bits 0-7)
+
+// デフォルト Error Estimate: S=1 (synchronized), Z=0 (NTP), Scale=0, Multiplier=1
+// エラー = Multiplier * 2^(-32) * 2^Scale 秒 = 1 * 2^(-32) 秒 ≈ 0.23 ns
+#define ERROR_ESTIMATE_DEFAULT    0x8001
+
 // Windows epoch から NTP epoch への変換定数
 #ifdef _WIN32
 #define WINDOWS_TO_NTP_OFFSET 11644473600ULL

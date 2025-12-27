@@ -11,7 +11,7 @@
 #define PRINT_SOCKET_ERROR(msg) fprintf(stderr, "%s: error %d\n", msg, SOCKET_ERRNO)
 
 // グローバル変数（シグナルハンドラからアクセス）
-static volatile int g_running = 1;
+static volatile sig_atomic_t g_running = 1;
 static bool g_negative_delay_seen = false;
 
 // 統計情報構造体
@@ -107,7 +107,7 @@ static int parse_port(const char *arg, uint16_t *port)
  * @param servaddr サーバーアドレス構造体のポインタ
  * @return ソケットディスクリプタ、エラー時-1
  */
-static int init_socket(const char *ip, uint16_t port, struct sockaddr_in *servaddr)
+static SOCKET init_socket(const char *ip, uint16_t port, struct sockaddr_in *servaddr)
 {
     SOCKET sockfd;
 
@@ -171,7 +171,7 @@ static int send_stamp_packet(int sockfd, uint32_t seq, const struct sockaddr_in 
     // パケットの初期化（RFC 4.2.1 準拠）
     memset(tx_packet, 0, sizeof(*tx_packet));
     tx_packet->seq_num = htonl(seq);
-    tx_packet->error_estimate = htons(0); // MBZ フィールドは既に0で初期化
+    tx_packet->error_estimate = htons(ERROR_ESTIMATE_DEFAULT);
     // T1: 送信時刻の取得
     if (get_ntp_timestamp(&t1_sec, &t1_frac) != 0)
     {
@@ -263,6 +263,10 @@ static int receive_and_process_packet(int sockfd, const struct stamp_sender_pack
     double rtt = forward_delay + backward_delay;
     double offset = ((t2 - t1) + (t3 - t4)) * 0.5 * 1000.0;
 
+    // オフセット補正した遅延（クロック差を考慮した推定値）
+    double adj_forward = forward_delay - offset;
+    double adj_backward = backward_delay + offset;
+
     // 異常値のチェック
     if (forward_delay < 0 || backward_delay < 0)
     {
@@ -279,15 +283,16 @@ static int receive_and_process_packet(int sockfd, const struct stamp_sender_pack
         g_stats.max_rtt = rtt;
 
     // 結果の表示
-    printf("%" PRIu32 "\t%.3f\t\t%.3f\t\t%.3f\t\t%.3f\n",
-           (uint32_t)ntohl(rx_packet.sender_seq_num), forward_delay, backward_delay, rtt, offset);
+    printf("%" PRIu32 "\t%.3f\t\t%.3f\t\t%.3f\t%.3f\t\t%.3f\t\t%.3f\n",
+           (uint32_t)ntohl(rx_packet.sender_seq_num),
+           forward_delay, backward_delay, rtt, offset, adj_forward, adj_backward);
 
     return 0;
 }
 
 int main(int argc, char *argv[])
 {
-    int sockfd;
+    SOCKET sockfd;
     struct sockaddr_in servaddr;
     struct stamp_sender_packet tx_packet;
     uint32_t seq = 0;
@@ -337,8 +342,8 @@ int main(int argc, char *argv[])
     // 測定開始メッセージの表示
     printf("STAMP Sender targeting %s:%u\n", ip, port);
     printf("Press Ctrl+C to stop and show statistics\n");
-    printf("Seq\tForward(ms)\tBackward(ms)\tRTT(ms)\tOffset(ms)\n");
-    printf("----------------------------------------------------------------\n");
+    printf("Seq\tFwd(ms)\t\tBwd(ms)\t\tRTT(ms)\tOffset(ms)\t[adj_Fwd]\t[adj_Bwd]\n");
+    printf("--------------------------------------------------------------------------------------------\n");
 
     // メインループ
     while (g_running)
