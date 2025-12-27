@@ -54,6 +54,7 @@ static void test_constants(void)
     EXPECT_EQ_ULL(STAMP_BASE_PACKET_SIZE, 44, "STAMP_BASE_PACKET_SIZE");
     EXPECT_TRUE(STAMP_MAX_PACKET_SIZE >= STAMP_BASE_PACKET_SIZE,
                 "STAMP_MAX_PACKET_SIZE >= STAMP_BASE_PACKET_SIZE");
+    EXPECT_EQ_ULL(NTP_OFFSET, 2208988800UL, "NTP_OFFSET");
 }
 
 static void test_struct_layout(void)
@@ -67,6 +68,8 @@ static void test_struct_layout(void)
 
     EXPECT_EQ_ULL(offsetof(struct stamp_sender_packet, timestamp_sec), 4,
                   "sender.timestamp_sec offset");
+    EXPECT_EQ_ULL(offsetof(struct stamp_sender_packet, timestamp_frac), 8,
+                  "sender.timestamp_frac offset");
     EXPECT_EQ_ULL(offsetof(struct stamp_sender_packet, error_estimate), 12,
                   "sender.error_estimate offset");
     EXPECT_EQ_ULL(offsetof(struct stamp_sender_packet, mbz), 14,
@@ -74,6 +77,8 @@ static void test_struct_layout(void)
 
     EXPECT_EQ_ULL(offsetof(struct stamp_reflector_packet, timestamp_sec), 4,
                   "reflector.timestamp_sec offset");
+    EXPECT_EQ_ULL(offsetof(struct stamp_reflector_packet, timestamp_frac), 8,
+                  "reflector.timestamp_frac offset");
     EXPECT_EQ_ULL(offsetof(struct stamp_reflector_packet, error_estimate), 12,
                   "reflector.error_estimate offset");
     EXPECT_EQ_ULL(offsetof(struct stamp_reflector_packet, rx_sec), 16,
@@ -123,12 +128,33 @@ static void test_get_ntp_timestamp(void)
 
     double t_unix = ntp_to_double(sec, frac);
     time_t now = time(NULL);
-    EXPECT_TRUE(fabs(t_unix - (double)now) < 5.0, "ntp timestamp close to wall clock");
+    EXPECT_TRUE(fabs(t_unix - (double)now) < 1.0, "ntp timestamp close to wall clock");
 
     rc = get_ntp_timestamp(NULL, &frac);
     EXPECT_TRUE(rc != 0, "get_ntp_timestamp rejects null sec");
     rc = get_ntp_timestamp(&sec, NULL);
     EXPECT_TRUE(rc != 0, "get_ntp_timestamp rejects null frac");
+}
+
+static void test_byte_order(void)
+{
+    struct stamp_sender_packet pkt;
+    memset(&pkt, 0, sizeof(pkt));
+
+    // seq_num byte order
+    pkt.seq_num = htonl(12345);
+    EXPECT_EQ_ULL(ntohl(pkt.seq_num), 12345, "seq_num byte order");
+
+    // timestamp byte order
+    pkt.timestamp_sec = htonl(0x12345678);
+    EXPECT_EQ_ULL(ntohl(pkt.timestamp_sec), 0x12345678, "timestamp_sec byte order");
+
+    pkt.timestamp_frac = htonl(0xABCDEF00);
+    EXPECT_EQ_ULL(ntohl(pkt.timestamp_frac), 0xABCDEF00, "timestamp_frac byte order");
+
+    // error_estimate byte order
+    pkt.error_estimate = htons(0x1234);
+    EXPECT_EQ_ULL(ntohs(pkt.error_estimate), 0x1234, "error_estimate byte order");
 }
 
 int main(void)
@@ -138,6 +164,7 @@ int main(void)
     test_validate_stamp_packet();
     test_ntp_to_double();
     test_get_ntp_timestamp();
+    test_byte_order();
 
     if (g_tests_failed == 0)
     {
