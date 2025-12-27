@@ -11,7 +11,7 @@
 #define PRINT_SOCKET_ERROR(msg) fprintf(stderr, "%s: error %d\n", msg, SOCKET_ERRNO)
 
 // グローバル変数（シグナルハンドラからアクセス）
-static volatile int g_running = 1;
+static volatile sig_atomic_t g_running = 1;
 static bool g_negative_delay_seen = false;
 
 // 統計情報構造体
@@ -107,7 +107,7 @@ static int parse_port(const char *arg, uint16_t *port)
  * @param servaddr サーバーアドレス構造体のポインタ
  * @return ソケットディスクリプタ、エラー時-1
  */
-static int init_socket(const char *ip, uint16_t port, struct sockaddr_in *servaddr)
+static SOCKET init_socket(const char *ip, uint16_t port, struct sockaddr_in *servaddr)
 {
     SOCKET sockfd;
 
@@ -287,7 +287,7 @@ static int receive_and_process_packet(int sockfd, const struct stamp_sender_pack
 
 int main(int argc, char *argv[])
 {
-    int sockfd;
+    SOCKET sockfd;
     struct sockaddr_in servaddr;
     struct stamp_sender_packet tx_packet;
     uint32_t seq = 0;
