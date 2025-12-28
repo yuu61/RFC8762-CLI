@@ -105,7 +105,7 @@ static int parse_port(const char *arg, uint16_t *port)
  * @param ip サーバーIPアドレス
  * @param port 宛先ポート番号
  * @param servaddr サーバーアドレス構造体のポインタ
- * @return ソケットディスクリプタ、エラー時-1
+ * @return ソケットディスクリプタ、エラー時INVALID_SOCKET
  */
 static SOCKET init_socket(const char *ip, uint16_t port, struct sockaddr_in *servaddr)
 {
@@ -116,7 +116,7 @@ static SOCKET init_socket(const char *ip, uint16_t port, struct sockaddr_in *ser
     if (SOCKET_ERROR_CHECK(sockfd))
     {
         PRINT_SOCKET_ERROR("socket creation failed");
-        return -1;
+        return INVALID_SOCKET;
     }
 
     // タイムアウト設定
@@ -127,7 +127,7 @@ static SOCKET init_socket(const char *ip, uint16_t port, struct sockaddr_in *ser
     {
         PRINT_SOCKET_ERROR("setsockopt failed");
         CLOSE_SOCKET(sockfd);
-        return -1;
+        return INVALID_SOCKET;
     }
 #else
     struct timeval tv;
@@ -137,7 +137,7 @@ static SOCKET init_socket(const char *ip, uint16_t port, struct sockaddr_in *ser
     {
         PRINT_SOCKET_ERROR("setsockopt failed");
         CLOSE_SOCKET(sockfd);
-        return -1;
+        return INVALID_SOCKET;
     }
 #endif
 
@@ -149,7 +149,7 @@ static SOCKET init_socket(const char *ip, uint16_t port, struct sockaddr_in *ser
     {
         fprintf(stderr, "Invalid address: %s\n", ip);
         CLOSE_SOCKET(sockfd);
-        return -1;
+        return INVALID_SOCKET;
     }
 
     return sockfd;
@@ -331,7 +331,7 @@ int main(int argc, char *argv[])
 
     // ソケットの初期化
     sockfd = init_socket(ip, port, &servaddr);
-    if (sockfd < 0)
+    if (SOCKET_ERROR_CHECK(sockfd))
     {
 #ifdef _WIN32
         WSACleanup();

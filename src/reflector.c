@@ -102,9 +102,9 @@ static void init_wsa_recvmsg(int sockfd)
 
 /**
  * リスニングソケットの初期化 (RFC 8762 Section 3)
- * @return ソケットディスクリプタ、エラー時-1
+ * @return ソケットディスクリプタ、エラー時INVALID_SOCKET
  */
-static int init_reflector_socket(uint16_t port)
+static SOCKET init_reflector_socket(uint16_t port)
 {
 	SOCKET sockfd;
 	struct sockaddr_in servaddr;
@@ -115,7 +115,7 @@ static int init_reflector_socket(uint16_t port)
 	if (SOCKET_ERROR_CHECK(sockfd))
 	{
 		PRINT_SOCKET_ERROR("socket creation failed");
-		return -1;
+		return INVALID_SOCKET;
 	}
 
 	// SO_REUSEADDRオプションの設定
@@ -124,7 +124,7 @@ static int init_reflector_socket(uint16_t port)
 	{
 		PRINT_SOCKET_ERROR("setsockopt SO_REUSEADDR failed");
 		CLOSE_SOCKET(sockfd);
-		return -1;
+		return INVALID_SOCKET;
 	}
 
 	// 受信TTL取得の有効化 (可能な場合)
@@ -145,7 +145,7 @@ static int init_reflector_socket(uint16_t port)
 	{
 		PRINT_SOCKET_ERROR("bind failed");
 		CLOSE_SOCKET(sockfd);
-		return -1;
+		return INVALID_SOCKET;
 	}
 
 	return sockfd;
@@ -340,7 +340,7 @@ static int recv_stamp_packet(int sockfd, uint8_t *buffer, int buffer_len,
 
 int main(int argc, char *argv[])
 {
-	int sockfd;
+	SOCKET sockfd;
 	struct sockaddr_in cliaddr;
 	uint8_t buffer[STAMP_MAX_PACKET_SIZE];
 	socklen_t len;
@@ -378,7 +378,7 @@ int main(int argc, char *argv[])
 
 	// ソケットの初期化
 	sockfd = init_reflector_socket(port);
-	if (sockfd < 0)
+	if (SOCKET_ERROR_CHECK(sockfd))
 	{
 #ifdef _WIN32
 		WSACleanup();

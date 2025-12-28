@@ -24,6 +24,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <signal.h>
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunknown-pragmas"
 #pragma comment(lib, "ws2_32.lib")
@@ -41,6 +42,7 @@
 #include <errno.h>
 #include <signal.h>
 typedef int SOCKET;
+#define INVALID_SOCKET (-1)
 #define SOCKET_ERROR_CHECK(x) ((x) < 0)
 #define CLOSE_SOCKET(x) close(x)
 #define SOCKET_ERRNO errno
