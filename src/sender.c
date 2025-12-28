@@ -270,7 +270,6 @@ static int receive_and_process_packet(int sockfd, const struct stamp_sender_pack
     // 異常値のチェック
     if (forward_delay < 0 || backward_delay < 0)
     {
-        fprintf(stderr, "Warning: Negative delay detected (clock skew?)\n");
         g_negative_delay_seen = true;
     }
 
