@@ -1,4 +1,4 @@
-﻿// RFC 8762 STAMP Reflector実装
+// RFC 8762 STAMP Reflector実装
 // Senderからのパケットを受信し、タイムスタンプを付けて返送する
 
 #include "stamp.h"
@@ -9,48 +9,14 @@
 
 #define PORT STAMP_PORT // STAMP標準ポート番号
 
-#ifndef _WIN32
-// カーネルタイムスタンプ対応フラグ
-static bool g_kernel_timestamp_enabled = false;
-#endif
-
-// エラーメッセージ出力用マクロ
-#define PRINT_SOCKET_ERROR(msg) fprintf(stderr, "%s: error %d\n", msg, SOCKET_ERRNO)
-
-// グローバル変数（シグナルハンドラからアクセス）
-static volatile sig_atomic_t g_running = 1;
-
 // セッション統計情報
-struct session_stats
+struct reflector_stats
 {
 	uint32_t packets_reflected;
 	uint32_t packets_dropped;
 };
 
-static struct session_stats g_stats = {0, 0};
-
-/**
- * シグナルハンドラ（Ctrl+C対応）
- */
-#ifdef _WIN32
-BOOL WINAPI signal_handler(DWORD signal)
-{
-	if (signal == CTRL_C_EVENT)
-	{
-		g_running = 0;
-		return TRUE;
-	}
-	return FALSE;
-}
-#else
-void signal_handler(int signal)
-{
-	if (signal == SIGINT)
-	{
-		g_running = 0;
-	}
-}
-#endif
+static struct reflector_stats g_stats = {0, 0};
 
 /**
  * 統計情報の表示
@@ -67,42 +33,8 @@ static void print_usage(const char *prog)
 	fprintf(stderr, "Usage: %s [port]\n", prog ? prog : "reflector");
 }
 
-static int parse_port(const char *arg, uint16_t *port)
-{
-	char *end = NULL;
-	unsigned long value;
-
-	if (!arg || !port)
-	{
-		return -1;
-	}
-
-	value = strtoul(arg, &end, 10);
-	if (*arg == '\0' || (end && *end != '\0') || value == 0 || value > 65535)
-	{
-		return -1;
-	}
-
-	*port = (uint16_t)value;
-	return 0;
-}
-
 #ifdef _WIN32
 static LPFN_WSARECVMSG g_wsa_recvmsg = NULL;
-
-static void init_wsa_recvmsg(int sockfd)
-{
-	DWORD bytes = 0;
-	GUID guid = WSAID_WSARECVMSG;
-
-	if (WSAIoctl(sockfd, SIO_GET_EXTENSION_FUNCTION_POINTER,
-				 &guid, sizeof(guid),
-				 &g_wsa_recvmsg, sizeof(g_wsa_recvmsg),
-				 &bytes, NULL, NULL) == SOCKET_ERROR)
-	{
-		g_wsa_recvmsg = NULL;
-	}
-}
 #endif
 
 /**
@@ -134,9 +66,11 @@ static SOCKET init_reflector_socket(uint16_t port)
 
 	// 受信TTL取得の有効化 (可能な場合)
 #ifdef IP_RECVTTL
-	int recv_ttl = 1;
-	(void)setsockopt(sockfd, IPPROTO_IP, IP_RECVTTL,
-					 (const char *)&recv_ttl, sizeof(recv_ttl));
+	{
+		int recv_ttl = 1;
+		(void)setsockopt(sockfd, IPPROTO_IP, IP_RECVTTL,
+						 (const char *)&recv_ttl, sizeof(recv_ttl));
+	}
 #endif
 
 #ifndef _WIN32
@@ -144,18 +78,12 @@ static SOCKET init_reflector_socket(uint16_t port)
 #ifdef SO_TIMESTAMPNS
 	{
 		int ts_opt = 1;
-		if (setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMPNS, &ts_opt, sizeof(ts_opt)) == 0)
-		{
-			g_kernel_timestamp_enabled = true;
-		}
+		(void)setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMPNS, &ts_opt, sizeof(ts_opt));
 	}
 #elif defined(SO_TIMESTAMP)
 	{
 		int ts_opt = 1;
-		if (setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMP, &ts_opt, sizeof(ts_opt)) == 0)
-		{
-			g_kernel_timestamp_enabled = true;
-		}
+		(void)setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMP, &ts_opt, sizeof(ts_opt));
 	}
 #endif
 #endif
@@ -350,9 +278,7 @@ static int recv_stamp_packet(int sockfd, uint8_t *buffer, int buffer_len,
 			if (t2_sec && t2_frac)
 			{
 				struct timespec *ts = (struct timespec *)CMSG_DATA(cmsg);
-				*t2_sec = htonl((uint32_t)(ts->tv_sec + NTP_OFFSET));
-				double fraction = (double)ts->tv_nsec * NTP_FRAC_SCALE / 1000000000.0;
-				*t2_frac = htonl((uint32_t)fraction);
+				timespec_to_ntp(ts, t2_sec, t2_frac);
 				timestamp_found = true;
 			}
 		}
@@ -363,9 +289,7 @@ static int recv_stamp_packet(int sockfd, uint8_t *buffer, int buffer_len,
 			if (t2_sec && t2_frac)
 			{
 				struct timeval *tv = (struct timeval *)CMSG_DATA(cmsg);
-				*t2_sec = htonl((uint32_t)(tv->tv_sec + NTP_OFFSET));
-				double fraction = (double)tv->tv_usec * NTP_FRAC_SCALE / 1000000.0;
-				*t2_frac = htonl((uint32_t)fraction);
+				timeval_to_ntp(tv, t2_sec, t2_frac);
 				timestamp_found = true;
 			}
 		}
@@ -440,10 +364,10 @@ int main(int argc, char *argv[])
 	}
 
 #ifdef _WIN32
-	init_wsa_recvmsg(sockfd);
-	SetConsoleCtrlHandler(signal_handler, TRUE);
+	init_wsa_recvmsg(sockfd, &g_wsa_recvmsg);
+	SetConsoleCtrlHandler(stamp_signal_handler, TRUE);
 #else
-	signal(SIGINT, signal_handler);
+	signal(SIGINT, stamp_signal_handler);
 #endif
 
 	printf("STAMP Reflector listening on port %u...\n", port);
