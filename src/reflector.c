@@ -9,6 +9,11 @@
 
 #define PORT STAMP_PORT // STAMP標準ポート番号
 
+#ifndef _WIN32
+// カーネルタイムスタンプ対応フラグ
+static bool g_kernel_timestamp_enabled = false;
+#endif
+
 // エラーメッセージ出力用マクロ
 #define PRINT_SOCKET_ERROR(msg) fprintf(stderr, "%s: error %d\n", msg, SOCKET_ERRNO)
 
@@ -132,6 +137,27 @@ static SOCKET init_reflector_socket(uint16_t port)
 	int recv_ttl = 1;
 	(void)setsockopt(sockfd, IPPROTO_IP, IP_RECVTTL,
 					 (const char *)&recv_ttl, sizeof(recv_ttl));
+#endif
+
+#ifndef _WIN32
+	// カーネルタイムスタンプの有効化 (SO_TIMESTAMPNS: ナノ秒精度)
+#ifdef SO_TIMESTAMPNS
+	{
+		int ts_opt = 1;
+		if (setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMPNS, &ts_opt, sizeof(ts_opt)) == 0)
+		{
+			g_kernel_timestamp_enabled = true;
+		}
+	}
+#elif defined(SO_TIMESTAMP)
+	{
+		int ts_opt = 1;
+		if (setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMP, &ts_opt, sizeof(ts_opt)) == 0)
+		{
+			g_kernel_timestamp_enabled = true;
+		}
+	}
+#endif
 #endif
 
 	// サーバーアドレスの設定
@@ -286,7 +312,8 @@ static int recv_stamp_packet(int sockfd, uint8_t *buffer, int buffer_len,
 #else
 	struct msghdr msg;
 	struct iovec iov;
-	char control[CMSG_SPACE(sizeof(int))];
+	// TTLとタイムスタンプの両方を格納できるサイズを確保
+	char control[CMSG_SPACE(sizeof(int)) + CMSG_SPACE(sizeof(struct timespec))];
 	int n;
 
 	if (ttl)
@@ -310,28 +337,54 @@ static int recv_stamp_packet(int sockfd, uint8_t *buffer, int buffer_len,
 		return -1;
 	}
 
-	// T2: 受信直後にタイムスタンプ取得
-	if (t2_sec && t2_frac)
-	{
-		get_ntp_timestamp(t2_sec, t2_frac);
-	}
-
 	*len = msg.msg_namelen;
-	if (ttl)
+
+	// T2: カーネルタイムスタンプを探す、なければユーザースペースで取得
+	bool timestamp_found = false;
+	struct cmsghdr *cmsg;
+	for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg))
 	{
-		struct cmsghdr *cmsg;
-		for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg))
+#ifdef SO_TIMESTAMPNS
+		if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMPNS)
 		{
-			if (cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_TTL)
+			if (t2_sec && t2_frac)
 			{
-				int recv_ttl;
-				memcpy(&recv_ttl, CMSG_DATA(cmsg), sizeof(recv_ttl));
-				if (recv_ttl >= 0 && recv_ttl <= 255)
-				{
-					*ttl = (uint8_t)recv_ttl;
-				}
+				struct timespec *ts = (struct timespec *)CMSG_DATA(cmsg);
+				*t2_sec = htonl((uint32_t)(ts->tv_sec + NTP_OFFSET));
+				double fraction = (double)ts->tv_nsec * NTP_FRAC_SCALE / 1000000000.0;
+				*t2_frac = htonl((uint32_t)fraction);
+				timestamp_found = true;
 			}
 		}
+#endif
+#ifdef SO_TIMESTAMP
+		if (!timestamp_found && cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMP)
+		{
+			if (t2_sec && t2_frac)
+			{
+				struct timeval *tv = (struct timeval *)CMSG_DATA(cmsg);
+				*t2_sec = htonl((uint32_t)(tv->tv_sec + NTP_OFFSET));
+				double fraction = (double)tv->tv_usec * NTP_FRAC_SCALE / 1000000.0;
+				*t2_frac = htonl((uint32_t)fraction);
+				timestamp_found = true;
+			}
+		}
+#endif
+		if (ttl && cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_TTL)
+		{
+			int recv_ttl;
+			memcpy(&recv_ttl, CMSG_DATA(cmsg), sizeof(recv_ttl));
+			if (recv_ttl >= 0 && recv_ttl <= 255)
+			{
+				*ttl = (uint8_t)recv_ttl;
+			}
+		}
+	}
+
+	// カーネルタイムスタンプが取得できなかった場合はフォールバック
+	if (!timestamp_found && t2_sec && t2_frac)
+	{
+		get_ntp_timestamp(t2_sec, t2_frac);
 	}
 
 	return n;

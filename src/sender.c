@@ -2,6 +2,9 @@
 // 指定されたサーバーに対してSTAMPパケットを送信し、RTTを測定する
 
 #include "stamp.h"
+#ifdef _WIN32
+#include <mswsock.h>
+#endif
 
 #define PORT STAMP_PORT       // STAMP標準ポート番号
 #define SERVER_IP "127.0.0.1" // デフォルトのサーバーIPアドレス（ローカルホスト）
@@ -26,6 +29,13 @@ struct stats
 };
 
 static struct stats g_stats = {0, 0, 0, 1e9, 0, 0};
+
+// カーネルタイムスタンプ対応フラグ
+static bool g_kernel_timestamp_enabled = false;
+
+#ifdef _WIN32
+static LPFN_WSARECVMSG g_wsa_recvmsg = NULL;
+#endif
 
 /**
  * シグナルハンドラ（Ctrl+C対応）
@@ -129,6 +139,19 @@ static SOCKET init_socket(const char *ip, uint16_t port, struct sockaddr_in *ser
         CLOSE_SOCKET(sockfd);
         return INVALID_SOCKET;
     }
+
+    // WSARecvMsg関数ポインタの取得（カーネルタイムスタンプ用）
+    {
+        DWORD bytes = 0;
+        GUID guid = WSAID_WSARECVMSG;
+        if (WSAIoctl(sockfd, SIO_GET_EXTENSION_FUNCTION_POINTER,
+                     &guid, sizeof(guid),
+                     &g_wsa_recvmsg, sizeof(g_wsa_recvmsg),
+                     &bytes, NULL, NULL) == 0 && g_wsa_recvmsg != NULL)
+        {
+            g_kernel_timestamp_enabled = true;
+        }
+    }
 #else
     struct timeval tv;
     tv.tv_sec = SOCKET_TIMEOUT_SEC;
@@ -139,6 +162,25 @@ static SOCKET init_socket(const char *ip, uint16_t port, struct sockaddr_in *ser
         CLOSE_SOCKET(sockfd);
         return INVALID_SOCKET;
     }
+
+    // カーネルタイムスタンプの有効化 (SO_TIMESTAMPNS: ナノ秒精度)
+#ifdef SO_TIMESTAMPNS
+    {
+        int opt = 1;
+        if (setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMPNS, &opt, sizeof(opt)) == 0)
+        {
+            g_kernel_timestamp_enabled = true;
+        }
+    }
+#elif defined(SO_TIMESTAMP)
+    {
+        int opt = 1;
+        if (setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMP, &opt, sizeof(opt)) == 0)
+        {
+            g_kernel_timestamp_enabled = true;
+        }
+    }
+#endif
 #endif
 
     // サーバーアドレスの設定
@@ -194,6 +236,125 @@ static int send_stamp_packet(int sockfd, uint32_t seq, const struct sockaddr_in 
 }
 
 /**
+ * カーネルタイムスタンプ付きでパケットを受信
+ * @param sockfd ソケットディスクリプタ
+ * @param buffer 受信バッファ
+ * @param buffer_len バッファサイズ
+ * @param servaddr サーバーアドレス
+ * @param len アドレス長
+ * @param t4_sec T4秒部分（出力）
+ * @param t4_frac T4小数部分（出力）
+ * @return 受信バイト数、エラー時-1
+ */
+static int recv_with_timestamp(int sockfd, uint8_t *buffer, size_t buffer_len,
+                               struct sockaddr_in *servaddr, socklen_t *len,
+                               uint32_t *t4_sec, uint32_t *t4_frac)
+{
+    int n;
+
+#ifdef _WIN32
+    if (g_wsa_recvmsg != NULL)
+    {
+        WSABUF data_buf;
+        WSAMSG msg;
+        char control[WSA_CMSG_SPACE(sizeof(struct timeval))];
+        DWORD bytes = 0;
+
+        data_buf.buf = (CHAR *)buffer;
+        data_buf.len = (ULONG)buffer_len;
+        memset(&msg, 0, sizeof(msg));
+        msg.name = (LPSOCKADDR)servaddr;
+        msg.namelen = *len;
+        msg.lpBuffers = &data_buf;
+        msg.dwBufferCount = 1;
+        msg.Control.buf = control;
+        msg.Control.len = sizeof(control);
+
+        if (g_wsa_recvmsg(sockfd, &msg, &bytes, NULL, NULL) == SOCKET_ERROR)
+        {
+            return -1;
+        }
+
+        // カーネルタイムスタンプ取得を試みる（Windows では通常利用不可）
+        // フォールバック: 即座にユーザースペースタイムスタンプ取得
+        get_ntp_timestamp(t4_sec, t4_frac);
+        *len = msg.namelen;
+        return (int)bytes;
+    }
+    else
+    {
+        n = recvfrom(sockfd, (char *)buffer, (int)buffer_len, 0,
+                     (struct sockaddr *)servaddr, len);
+        if (n > 0)
+        {
+            get_ntp_timestamp(t4_sec, t4_frac);
+        }
+        return n;
+    }
+#else
+    struct msghdr msg;
+    struct iovec iov;
+    // SO_TIMESTAMPNS用にtimespec分のスペースを確保
+    char control[CMSG_SPACE(sizeof(struct timespec))];
+
+    memset(&msg, 0, sizeof(msg));
+    iov.iov_base = buffer;
+    iov.iov_len = buffer_len;
+    msg.msg_name = servaddr;
+    msg.msg_namelen = *len;
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control;
+    msg.msg_controllen = sizeof(control);
+
+    n = recvmsg(sockfd, &msg, 0);
+    if (n < 0)
+    {
+        return -1;
+    }
+
+    *len = msg.msg_namelen;
+
+    // カーネルタイムスタンプを探す
+    bool timestamp_found = false;
+    struct cmsghdr *cmsg;
+    for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg))
+    {
+#ifdef SO_TIMESTAMPNS
+        if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMPNS)
+        {
+            struct timespec *ts = (struct timespec *)CMSG_DATA(cmsg);
+            *t4_sec = htonl((uint32_t)(ts->tv_sec + NTP_OFFSET));
+            double fraction = (double)ts->tv_nsec * NTP_FRAC_SCALE / 1000000000.0;
+            *t4_frac = htonl((uint32_t)fraction);
+            timestamp_found = true;
+            break;
+        }
+#endif
+#ifdef SO_TIMESTAMP
+        if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMP)
+        {
+            struct timeval *tv = (struct timeval *)CMSG_DATA(cmsg);
+            *t4_sec = htonl((uint32_t)(tv->tv_sec + NTP_OFFSET));
+            double fraction = (double)tv->tv_usec * NTP_FRAC_SCALE / 1000000.0;
+            *t4_frac = htonl((uint32_t)fraction);
+            timestamp_found = true;
+            break;
+        }
+#endif
+    }
+
+    // カーネルタイムスタンプが取得できなかった場合はフォールバック
+    if (!timestamp_found)
+    {
+        get_ntp_timestamp(t4_sec, t4_frac);
+    }
+
+    return n;
+#endif
+}
+
+/**
  * STAMPパケットの受信と処理 (RFC 8762 Section 4.2)
  * @param sockfd ソケットディスクリプタ
  * @param tx_packet 送信パケット
@@ -208,9 +369,8 @@ static int receive_and_process_packet(int sockfd, const struct stamp_sender_pack
     uint32_t t4_sec, t4_frac;
     uint8_t buffer[STAMP_MAX_PACKET_SIZE];
 
-    // パケット受信
-    int n = recvfrom(sockfd, (char *)buffer, sizeof(buffer), 0,
-                     (struct sockaddr *)servaddr, &len);
+    // パケット受信（カーネルタイムスタンプ付き）
+    int n = recv_with_timestamp(sockfd, buffer, sizeof(buffer), servaddr, &len, &t4_sec, &t4_frac);
     if (n < 0)
     {
 #ifdef _WIN32
@@ -226,13 +386,6 @@ static int receive_and_process_packet(int sockfd, const struct stamp_sender_pack
         {
             PRINT_SOCKET_ERROR("recvfrom failed");
         }
-        return -1;
-    }
-
-    // T4: 受信時刻の取得
-    if (get_ntp_timestamp(&t4_sec, &t4_frac) != 0)
-    {
-        fprintf(stderr, "Failed to get T4 timestamp\n");
         return -1;
     }
 

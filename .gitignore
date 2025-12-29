@@ -42,6 +42,7 @@ Thumbs.db
 /.vs/
 *.user
 *.code-workspace
+/.claude/
 
 # Tool metadata
 compile_commands.json
