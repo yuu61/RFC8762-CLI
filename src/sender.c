@@ -1,6 +1,7 @@
-﻿// RFC 8762 STAMP Sender実装
+// RFC 8762 STAMP Sender実装
 // 指定されたサーバーに対してSTAMPパケットを送信し、RTTを測定する
 
+#define STAMP_DEFINE_GLOBALS
 #include "stamp.h"
 #ifdef _WIN32
 #include <mswsock.h>
@@ -10,15 +11,10 @@
 #define SERVER_IP "127.0.0.1" // デフォルトのサーバーIPアドレス（ローカルホスト）
 #define SEND_INTERVAL_SEC 1   // 送信間隔（秒）
 
-// エラーメッセージ出力用マクロ
-#define PRINT_SOCKET_ERROR(msg) fprintf(stderr, "%s: error %d\n", msg, SOCKET_ERRNO)
-
-// グローバル変数（シグナルハンドラからアクセス）
-static volatile sig_atomic_t g_running = 1;
 static bool g_negative_delay_seen = false;
 
 // 統計情報構造体
-struct stats
+struct sender_stats
 {
     uint32_t sent;
     uint32_t received;
@@ -28,36 +24,10 @@ struct stats
     double sum_rtt;
 };
 
-static struct stats g_stats = {0, 0, 0, 1e9, 0, 0};
-
-// カーネルタイムスタンプ対応フラグ
-static bool g_kernel_timestamp_enabled = false;
+static struct sender_stats g_stats = {0, 0, 0, 1e9, 0, 0};
 
 #ifdef _WIN32
 static LPFN_WSARECVMSG g_wsa_recvmsg = NULL;
-#endif
-
-/**
- * シグナルハンドラ（Ctrl+C対応）
- */
-#ifdef _WIN32
-BOOL WINAPI signal_handler(DWORD signal)
-{
-    if (signal == CTRL_C_EVENT)
-    {
-        g_running = 0;
-        return TRUE;
-    }
-    return FALSE;
-}
-#else
-void signal_handler(int signal)
-{
-    if (signal == SIGINT)
-    {
-        g_running = 0;
-    }
-}
 #endif
 
 /**
@@ -88,26 +58,6 @@ static void print_statistics(void)
 static void print_usage(const char *prog)
 {
     fprintf(stderr, "Usage: %s [server_ip] [port]\n", prog ? prog : "sender");
-}
-
-static int parse_port(const char *arg, uint16_t *port)
-{
-    char *end = NULL;
-    unsigned long value;
-
-    if (!arg || !port)
-    {
-        return -1;
-    }
-
-    value = strtoul(arg, &end, 10);
-    if (*arg == '\0' || (end && *end != '\0') || value == 0 || value > 65535)
-    {
-        return -1;
-    }
-
-    *port = (uint16_t)value;
-    return 0;
 }
 
 /**
@@ -141,17 +91,7 @@ static SOCKET init_socket(const char *ip, uint16_t port, struct sockaddr_in *ser
     }
 
     // WSARecvMsg関数ポインタの取得（カーネルタイムスタンプ用）
-    {
-        DWORD bytes = 0;
-        GUID guid = WSAID_WSARECVMSG;
-        if (WSAIoctl(sockfd, SIO_GET_EXTENSION_FUNCTION_POINTER,
-                     &guid, sizeof(guid),
-                     &g_wsa_recvmsg, sizeof(g_wsa_recvmsg),
-                     &bytes, NULL, NULL) == 0 && g_wsa_recvmsg != NULL)
-        {
-            g_kernel_timestamp_enabled = true;
-        }
-    }
+    init_wsa_recvmsg(sockfd, &g_wsa_recvmsg);
 #else
     struct timeval tv;
     tv.tv_sec = SOCKET_TIMEOUT_SEC;
@@ -167,18 +107,12 @@ static SOCKET init_socket(const char *ip, uint16_t port, struct sockaddr_in *ser
 #ifdef SO_TIMESTAMPNS
     {
         int opt = 1;
-        if (setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMPNS, &opt, sizeof(opt)) == 0)
-        {
-            g_kernel_timestamp_enabled = true;
-        }
+        (void)setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMPNS, &opt, sizeof(opt));
     }
 #elif defined(SO_TIMESTAMP)
     {
         int opt = 1;
-        if (setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMP, &opt, sizeof(opt)) == 0)
-        {
-            g_kernel_timestamp_enabled = true;
-        }
+        (void)setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMP, &opt, sizeof(opt));
     }
 #endif
 #endif
@@ -324,9 +258,7 @@ static int recv_with_timestamp(int sockfd, uint8_t *buffer, size_t buffer_len,
         if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMPNS)
         {
             struct timespec *ts = (struct timespec *)CMSG_DATA(cmsg);
-            *t4_sec = htonl((uint32_t)(ts->tv_sec + NTP_OFFSET));
-            double fraction = (double)ts->tv_nsec * NTP_FRAC_SCALE / 1000000000.0;
-            *t4_frac = htonl((uint32_t)fraction);
+            timespec_to_ntp(ts, t4_sec, t4_frac);
             timestamp_found = true;
             break;
         }
@@ -335,9 +267,7 @@ static int recv_with_timestamp(int sockfd, uint8_t *buffer, size_t buffer_len,
         if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMP)
         {
             struct timeval *tv = (struct timeval *)CMSG_DATA(cmsg);
-            *t4_sec = htonl((uint32_t)(tv->tv_sec + NTP_OFFSET));
-            double fraction = (double)tv->tv_usec * NTP_FRAC_SCALE / 1000000.0;
-            *t4_frac = htonl((uint32_t)fraction);
+            timeval_to_ntp(tv, t4_sec, t4_frac);
             timestamp_found = true;
             break;
         }
@@ -460,10 +390,10 @@ int main(int argc, char *argv[])
     }
 
     // シグナルハンドラの設定
-    SetConsoleCtrlHandler(signal_handler, TRUE);
+    SetConsoleCtrlHandler(stamp_signal_handler, TRUE);
 #else
     // UNIX/Linux: シグナルハンドラの設定
-    signal(SIGINT, signal_handler);
+    signal(SIGINT, stamp_signal_handler);
 #endif
 
     // コマンドライン引数からIPアドレスを取得（なければデフォルト使用）

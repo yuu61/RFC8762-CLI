@@ -23,6 +23,7 @@
 // Windows環境
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <mswsock.h>
 #include <windows.h>
 #include <signal.h>
 #pragma GCC diagnostic push
@@ -208,5 +209,122 @@ static inline int validate_stamp_packet(const void *packet, int size)
     }
     return 1;
 }
+
+// =============================================================================
+// 共通ユーティリティ（reflector.c, sender.c で使用）
+// =============================================================================
+
+// エラーメッセージ出力用マクロ
+#define PRINT_SOCKET_ERROR(msg) fprintf(stderr, "%s: error %d\n", msg, SOCKET_ERRNO)
+
+// グローバル変数（シグナルハンドラからアクセス）
+#ifdef STAMP_DEFINE_GLOBALS
+volatile sig_atomic_t g_running = 1;
+#else
+extern volatile sig_atomic_t g_running;
+#endif
+
+/**
+ * シグナルハンドラ（Ctrl+C対応）
+ */
+#ifdef _WIN32
+static inline BOOL WINAPI stamp_signal_handler(DWORD signal)
+{
+    if (signal == CTRL_C_EVENT)
+    {
+        g_running = 0;
+        return TRUE;
+    }
+    return FALSE;
+}
+#else
+static inline void stamp_signal_handler(int signal)
+{
+    if (signal == SIGINT)
+    {
+        g_running = 0;
+    }
+}
+#endif
+
+/**
+ * ポート番号のパース
+ * @param arg ポート番号文字列
+ * @param port パース結果を格納するポインタ
+ * @return 成功時0、エラー時-1
+ */
+static inline int parse_port(const char *arg, uint16_t *port)
+{
+    char *end = NULL;
+    unsigned long value;
+
+    if (!arg || !port)
+    {
+        return -1;
+    }
+
+    value = strtoul(arg, &end, 10);
+    if (*arg == '\0' || (end && *end != '\0') || value == 0 || value > 65535)
+    {
+        return -1;
+    }
+
+    *port = (uint16_t)value;
+    return 0;
+}
+
+#ifdef _WIN32
+/**
+ * WSARecvMsg関数ポインタの初期化
+ * @param sockfd ソケットディスクリプタ
+ * @param wsa_recvmsg 関数ポインタを格納するポインタ
+ * @return 成功時true、失敗時false
+ */
+static inline bool init_wsa_recvmsg(SOCKET sockfd, LPFN_WSARECVMSG *wsa_recvmsg)
+{
+    DWORD bytes = 0;
+    GUID guid = WSAID_WSARECVMSG;
+
+    if (WSAIoctl(sockfd, SIO_GET_EXTENSION_FUNCTION_POINTER,
+                 &guid, sizeof(guid),
+                 wsa_recvmsg, sizeof(*wsa_recvmsg),
+                 &bytes, NULL, NULL) == SOCKET_ERROR)
+    {
+        *wsa_recvmsg = NULL;
+        return false;
+    }
+    return true;
+}
+#endif
+
+#ifndef _WIN32
+/**
+ * カーネルタイムスタンプからNTPタイムスタンプへの変換（timespec版）
+ * @param ts timespec構造体へのポインタ
+ * @param ntp_sec NTP秒部分を格納するポインタ
+ * @param ntp_frac NTP小数部分を格納するポインタ
+ */
+static inline void timespec_to_ntp(const struct timespec *ts,
+                                   uint32_t *ntp_sec, uint32_t *ntp_frac)
+{
+    *ntp_sec = htonl((uint32_t)(ts->tv_sec + NTP_OFFSET));
+    double fraction = (double)ts->tv_nsec * NTP_FRAC_SCALE / 1000000000.0;
+    *ntp_frac = htonl((uint32_t)fraction);
+}
+
+/**
+ * カーネルタイムスタンプからNTPタイムスタンプへの変換（timeval版）
+ * @param tv timeval構造体へのポインタ
+ * @param ntp_sec NTP秒部分を格納するポインタ
+ * @param ntp_frac NTP小数部分を格納するポインタ
+ */
+static inline void timeval_to_ntp(const struct timeval *tv,
+                                  uint32_t *ntp_sec, uint32_t *ntp_frac)
+{
+    *ntp_sec = htonl((uint32_t)(tv->tv_sec + NTP_OFFSET));
+    double fraction = (double)tv->tv_usec * NTP_FRAC_SCALE / 1000000.0;
+    *ntp_frac = htonl((uint32_t)fraction);
+}
+#endif
 
 #endif
