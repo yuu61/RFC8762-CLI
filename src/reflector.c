@@ -1,6 +1,7 @@
 // RFC 8762 STAMP Reflector実装
 // Senderからのパケットを受信し、タイムスタンプを付けて返送する
 
+#define STAMP_DEFINE_GLOBALS
 #include "stamp.h"
 #include <sys/types.h>
 #ifdef _WIN32

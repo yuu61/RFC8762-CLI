@@ -1,6 +1,7 @@
 // RFC 8762 STAMP Sender実装
 // 指定されたサーバーに対してSTAMPパケットを送信し、RTTを測定する
 
+#define STAMP_DEFINE_GLOBALS
 #include "stamp.h"
 #ifdef _WIN32
 #include <mswsock.h>

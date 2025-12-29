@@ -218,7 +218,11 @@ static inline int validate_stamp_packet(const void *packet, int size)
 #define PRINT_SOCKET_ERROR(msg) fprintf(stderr, "%s: error %d\n", msg, SOCKET_ERRNO)
 
 // グローバル変数（シグナルハンドラからアクセス）
-static volatile sig_atomic_t g_running = 1;
+#ifdef STAMP_DEFINE_GLOBALS
+volatile sig_atomic_t g_running = 1;
+#else
+extern volatile sig_atomic_t g_running;
+#endif
 
 /**
  * シグナルハンドラ（Ctrl+C対応）
