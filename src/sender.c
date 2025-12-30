@@ -254,7 +254,7 @@ static int recv_with_timestamp(int sockfd, uint8_t *buffer, size_t buffer_len,
     struct cmsghdr *cmsg;
     for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg))
     {
-#ifdef SO_TIMESTAMPNS
+#ifdef SCM_TIMESTAMPNS
         if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMPNS)
         {
             struct timespec *ts = (struct timespec *)CMSG_DATA(cmsg);
@@ -263,7 +263,7 @@ static int recv_with_timestamp(int sockfd, uint8_t *buffer, size_t buffer_len,
             break;
         }
 #endif
-#ifdef SO_TIMESTAMP
+#ifdef SCM_TIMESTAMP
         if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMP)
         {
             struct timeval *tv = (struct timeval *)CMSG_DATA(cmsg);

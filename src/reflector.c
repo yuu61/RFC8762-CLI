@@ -273,7 +273,7 @@ static int recv_stamp_packet(int sockfd, uint8_t *buffer, int buffer_len,
 	struct cmsghdr *cmsg;
 	for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg))
 	{
-#ifdef SO_TIMESTAMPNS
+#ifdef SCM_TIMESTAMPNS
 		if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMPNS)
 		{
 			if (t2_sec && t2_frac)
@@ -284,7 +284,7 @@ static int recv_stamp_packet(int sockfd, uint8_t *buffer, int buffer_len,
 			}
 		}
 #endif
-#ifdef SO_TIMESTAMP
+#ifdef SCM_TIMESTAMP
 		if (!timestamp_found && cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMP)
 		{
 			if (t2_sec && t2_frac)
