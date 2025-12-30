@@ -47,6 +47,13 @@ typedef int SOCKET;
 #define SOCKET_ERROR_CHECK(x) ((x) < 0)
 #define CLOSE_SOCKET(x) close(x)
 #define SOCKET_ERRNO errno
+// SCM_TIMESTAMP / SCM_TIMESTAMPNS が未定義の場合のフォールバック
+#if !defined(SCM_TIMESTAMP) && defined(SO_TIMESTAMP)
+#define SCM_TIMESTAMP SO_TIMESTAMP
+#endif
+#if !defined(SCM_TIMESTAMPNS) && defined(SO_TIMESTAMPNS)
+#define SCM_TIMESTAMPNS SO_TIMESTAMPNS
+#endif
 #endif
 
 // NTPタイムスタンプのオフセット (1900年1月1日から1970年1月1日までの秒数)
