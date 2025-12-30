@@ -139,7 +139,7 @@ static SOCKET init_socket(const char *ip, uint16_t port, struct sockaddr_in *ser
  * @param tx_packet 送信パケットのポインタ
  * @return 成功時0、エラー時-1
  */
-static int send_stamp_packet(int sockfd, uint32_t seq, const struct sockaddr_in *servaddr,
+static int send_stamp_packet(SOCKET sockfd, uint32_t seq, const struct sockaddr_in *servaddr,
                              struct stamp_sender_packet *tx_packet)
 {
     uint32_t t1_sec, t1_frac;
@@ -180,7 +180,7 @@ static int send_stamp_packet(int sockfd, uint32_t seq, const struct sockaddr_in 
  * @param t4_frac T4小数部分（出力）
  * @return 受信バイト数、エラー時-1
  */
-static int recv_with_timestamp(int sockfd, uint8_t *buffer, size_t buffer_len,
+static int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len,
                                struct sockaddr_in *servaddr, socklen_t *len,
                                uint32_t *t4_sec, uint32_t *t4_frac)
 {
@@ -291,7 +291,7 @@ static int recv_with_timestamp(int sockfd, uint8_t *buffer, size_t buffer_len,
  * @param servaddr サーバーアドレス
  * @return 成功時0、エラー時-1
  */
-static int receive_and_process_packet(int sockfd, const struct stamp_sender_packet *tx_packet,
+static int receive_and_process_packet(SOCKET sockfd, const struct stamp_sender_packet *tx_packet,
                                       struct sockaddr_in *servaddr)
 {
     struct stamp_reflector_packet rx_packet;

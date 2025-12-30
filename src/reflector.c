@@ -116,7 +116,7 @@ static SOCKET init_reflector_socket(uint16_t port)
  * @param ttl_ipv4 IPv4 TTL値（IPv4の場合）、またはipv6_hop_limit IPv6 Hop Limit値
  * @return 成功時0、エラー時-1
  */
-static int reflect_packet(int sockfd, uint8_t *buffer, int send_len,
+static int reflect_packet(SOCKET sockfd, uint8_t *buffer, int send_len,
 						  const struct sockaddr_in *cliaddr, socklen_t len, uint8_t ttl,
 						  uint32_t t2_sec, uint32_t t2_frac)
 {
@@ -173,7 +173,7 @@ static int reflect_packet(int sockfd, uint8_t *buffer, int send_len,
 	return 0;
 }
 
-static int recv_stamp_packet(int sockfd, uint8_t *buffer, int buffer_len,
+static int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
 							 struct sockaddr_in *cliaddr, socklen_t *len, uint8_t *ttl,
 							 uint32_t *t2_sec, uint32_t *t2_frac)
 {
