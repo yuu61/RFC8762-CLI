@@ -296,7 +296,7 @@ static int receive_and_process_packet(int sockfd, const struct stamp_sender_pack
 {
     struct stamp_reflector_packet rx_packet;
     socklen_t len = sizeof(*servaddr);
-    uint32_t t4_sec, t4_frac;
+    uint32_t t4_sec = 0, t4_frac = 0;
     uint8_t buffer[STAMP_MAX_PACKET_SIZE];
 
     // パケット受信（カーネルタイムスタンプ付き）
