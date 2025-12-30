@@ -64,7 +64,12 @@ ctest --preset test
 ### クリーンアップ
 
 ```bash
-rm -rf build/
+# 各ビルドのクリーン
+cmake --build --preset release --target clean
+cmake --build --preset debug --target clean
+
+# 全てのビルドを削除
+cmake -E rm -rf build
 ```
 
 ## 使い方
