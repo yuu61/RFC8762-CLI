@@ -64,6 +64,15 @@ static SOCKET init_reflector_socket(uint16_t port)
 		return INVALID_SOCKET;
 	}
 
+#ifdef _WIN32
+	// Windows: ソケットタイムアウトを設定（Ctrl+Cで終了できるようにする）
+	{
+		DWORD timeout_ms = 1000; // 1秒
+		setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO,
+				   (const char *)&timeout_ms, sizeof(timeout_ms));
+	}
+#endif
+
 	// 受信TTL取得の有効化 (可能な場合)
 #ifdef IP_RECVTTL
 	{
@@ -388,6 +397,11 @@ int main(int argc, char *argv[])
 		{
 			if (!g_running)
 				break;
+#ifdef _WIN32
+			// Windows: タイムアウトエラーは無視してループを継続
+			if (WSAGetLastError() == WSAETIMEDOUT)
+				continue;
+#endif
 			PRINT_SOCKET_ERROR("recvfrom failed");
 			continue;
 		}

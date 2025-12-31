@@ -437,7 +437,11 @@ int main(int argc, char *argv[])
         seq++;
 
 #ifdef _WIN32
-        Sleep(SEND_INTERVAL_SEC * 1000);
+        // Ctrl+Cで中断できるよう、短い間隔でスリープしてg_runningをチェック
+        for (int i = 0; i < SEND_INTERVAL_SEC * 10 && g_running; i++)
+        {
+            Sleep(100);
+        }
 #else
         sleep(SEND_INTERVAL_SEC);
 #endif
