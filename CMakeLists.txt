@@ -14,9 +14,15 @@ endif()
 set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release")
 
 # Compiler flags
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra")
-set(CMAKE_C_FLAGS_DEBUG "-g -O0 -DDEBUG")
-set(CMAKE_C_FLAGS_RELEASE "-O3 -DNDEBUG")
+if(MSVC)
+    # MSVC: /W4 for warnings, /utf-8 for UTF-8 source files
+    add_compile_options(/W4 /utf-8)
+else()
+    # GCC/Clang
+    add_compile_options(-Wall -Wextra)
+    set(CMAKE_C_FLAGS_DEBUG "-g -O0 -DDEBUG")
+    set(CMAKE_C_FLAGS_RELEASE "-O3 -DNDEBUG")
+endif()
 
 # Platform-specific settings
 if(WIN32)
