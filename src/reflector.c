@@ -3,7 +3,6 @@
 
 #define STAMP_DEFINE_GLOBALS
 #include "stamp.h"
-#include <sys/types.h>
 #ifdef _WIN32
 #include <mswsock.h>
 #endif
@@ -410,9 +409,11 @@ int main(int argc, char *argv[])
 		{
 			const struct stamp_reflector_packet *packet =
 				(const struct stamp_reflector_packet *)buffer;
+			char addr_str[INET_ADDRSTRLEN];
+			inet_ntop(AF_INET, &cliaddr.sin_addr, addr_str, sizeof(addr_str));
 			printf("Reflected packet Seq: %" PRIu32 " from %s:%d (TTL: %d)\n",
 				   (uint32_t)ntohl(packet->sender_seq_num),
-				   inet_ntoa(cliaddr.sin_addr),
+				   addr_str,
 				   ntohs(cliaddr.sin_port),
 				   ttl);
 		}
