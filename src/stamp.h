@@ -26,10 +26,14 @@
 #include <mswsock.h>
 #include <windows.h>
 #include <signal.h>
+#ifdef _MSC_VER
+#pragma comment(lib, "ws2_32.lib")
+#else
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunknown-pragmas"
 #pragma comment(lib, "ws2_32.lib")
 #pragma GCC diagnostic pop
+#endif
 #define SOCKET_ERROR_CHECK(x) ((x) == INVALID_SOCKET)
 #define CLOSE_SOCKET(x) closesocket(x)
 #define SOCKET_ERRNO WSAGetLastError()
