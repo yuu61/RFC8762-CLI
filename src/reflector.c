@@ -132,6 +132,13 @@ static int reflect_packet(SOCKET sockfd, uint8_t *buffer, int send_len,
 	struct stamp_reflector_packet *packet;
 	uint32_t t3_sec, t3_frac;
 
+	// バッファサイズの検証
+	if (send_len <= 0 || send_len > STAMP_MAX_PACKET_SIZE)
+	{
+		fprintf(stderr, "Invalid packet size: %d\n", send_len);
+		return -1;
+	}
+
 	memset(&sender, 0, sizeof(sender));
 	if (send_len > 0)
 	{

@@ -325,6 +325,15 @@ static int receive_and_process_packet(SOCKET sockfd, const struct stamp_sender_p
         fprintf(stderr, "Invalid packet received\n");
         return -1;
     }
+
+    // 受信サイズが構造体サイズより小さい場合はエラー
+    if (n < (int)sizeof(rx_packet))
+    {
+        fprintf(stderr, "Packet too small: %d bytes (expected at least %d)\n",
+                n, (int)sizeof(rx_packet));
+        return -1;
+    }
+
     memcpy(&rx_packet, buffer, sizeof(rx_packet));
 
     // シーケンス番号の確認
@@ -340,6 +349,15 @@ static int receive_and_process_packet(SOCKET sockfd, const struct stamp_sender_p
     double t2 = ntp_to_double(rx_packet.rx_sec, rx_packet.rx_frac);
     double t3 = ntp_to_double(rx_packet.timestamp_sec, rx_packet.timestamp_frac);
     double t4 = ntp_to_double(t4_sec, t4_frac);
+
+    // タイムスタンプの論理的順序を検証
+    // 正常な場合: T1 < T2 < T3 < T4
+    // ただし、クロックオフセットがある場合 T2, T3 の順序が逆転することがある
+    if (t1 > t4)
+    {
+        fprintf(stderr, "Warning: T1 > T4 detected (%.9f > %.9f). Severe clock skew or timestamp error.\n", t1, t4);
+        g_negative_delay_seen = true;
+    }
 
     double forward_delay = (t2 - t1) * 1000.0;
     double backward_delay = (t4 - t3) * 1000.0;
@@ -438,9 +456,17 @@ int main(int argc, char *argv[])
 
 #ifdef _WIN32
         // Ctrl+Cで中断できるよう、短い間隔でスリープしてg_runningをチェック
-        for (int i = 0; i < SEND_INTERVAL_SEC * 10 && g_running; i++)
+        // 最大でも100回のループに制限（10秒まで対応）
+        int sleep_count = SEND_INTERVAL_SEC * 10;
+        if (sleep_count > 100) sleep_count = 100; // 大きな値の場合は上限を設ける
+        for (int i = 0; i < sleep_count && g_running; i++)
         {
             Sleep(100);
+        }
+        // 残りの時間がある場合は一度にスリープ
+        if (g_running && SEND_INTERVAL_SEC > 10)
+        {
+            Sleep((SEND_INTERVAL_SEC - 10) * 1000);
         }
 #else
         sleep(SEND_INTERVAL_SEC);
