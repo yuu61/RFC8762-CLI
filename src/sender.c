@@ -466,7 +466,7 @@ int main(int argc, char *argv[])
         // 残りの時間がある場合は一度にスリープ
         if (g_running && SEND_INTERVAL_SEC > 10)
         {
-            Sleep((SEND_INTERVAL_SEC - 10) * 1000);
+            Sleep((DWORD)(SEND_INTERVAL_SEC - 10) * 1000);
         }
 #else
         sleep(SEND_INTERVAL_SEC);

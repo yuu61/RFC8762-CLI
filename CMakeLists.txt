@@ -20,7 +20,11 @@ if(MSVC)
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         add_compile_options(/Od /Zi)
     else()
+        # Release: 最適化を有効化し、ランタイムチェックを無効化
         add_compile_options(/O2)
+        # /RTC1を明示的に無効化（/O2と競合するため）
+        string(REPLACE "/RTC1" "" CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
+        string(REPLACE "/RTC1" "" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
     endif()
 else()
     # GCC/Clang: Enhanced warning flags
