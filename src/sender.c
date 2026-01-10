@@ -326,14 +326,6 @@ static int receive_and_process_packet(SOCKET sockfd, const struct stamp_sender_p
         return -1;
     }
 
-    // 受信サイズが構造体サイズより小さい場合はエラー
-    if (n < (int)sizeof(rx_packet))
-    {
-        fprintf(stderr, "Packet too small: %d bytes (expected at least %d)\n",
-                n, (int)sizeof(rx_packet));
-        return -1;
-    }
-
     memcpy(&rx_packet, buffer, sizeof(rx_packet));
 
     // シーケンス番号の確認
@@ -461,7 +453,9 @@ int main(int argc, char *argv[])
             int sleep_interval_ms = 100;
             for (int elapsed = 0; elapsed < total_ms && g_running; elapsed += sleep_interval_ms)
             {
-                Sleep((DWORD)sleep_interval_ms);
+                int remaining = total_ms - elapsed;
+                int sleep_time = remaining < sleep_interval_ms ? remaining : sleep_interval_ms;
+                Sleep((DWORD)sleep_time);
             }
         }
 #else
