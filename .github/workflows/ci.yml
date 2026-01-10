@@ -23,7 +23,7 @@ jobs:
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
-          languages: c-cpp
+          languages: cpp
 
       - name: Configure CMake
         run: cmake -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release
@@ -46,10 +46,8 @@ jobs:
         include:
           - os: ubuntu-latest
             cmake_generator: "Unix Makefiles"
-            parallel_jobs: "$(nproc)"
           - os: windows-latest
             cmake_generator: "Visual Studio 17 2022"
-            parallel_jobs: "4"
 
     steps:
       - name: Checkout repository
@@ -63,10 +61,22 @@ jobs:
         if: runner.os == 'Windows'
         run: cmake -B build -G "${{ matrix.cmake_generator }}"
 
-      - name: Build
+      - name: Build (Unix)
+        if: runner.os != 'Windows'
         shell: bash
-        run: cmake --build build --config ${{ matrix.build_type }} --parallel ${{ matrix.parallel_jobs }}
+        run: cmake --build build --config ${{ matrix.build_type }} --parallel $(nproc)
 
-      - name: Run tests
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
         shell: bash
-        run: ctest --test-dir build --build-config ${{ matrix.build_type }} --output-on-failure --parallel ${{ matrix.parallel_jobs }}
+        run: cmake --build build --config ${{ matrix.build_type }} --parallel 4
+
+      - name: Run tests (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: ctest --test-dir build --build-config ${{ matrix.build_type }} --output-on-failure --parallel $(nproc)
+
+      - name: Run tests (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: ctest --test-dir build --build-config ${{ matrix.build_type }} --output-on-failure --parallel 4
