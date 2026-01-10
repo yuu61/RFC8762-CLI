@@ -20,17 +20,13 @@ if(MSVC)
     # Release構成: /RTC1を無効化（/O2と競合するため）
     # Visual Studioはマルチコンフィグジェネレーターなので、フラグ変数を直接修正
     string(REPLACE "/RTC1" "" CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
-    string(REPLACE "/RTC1" "" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
     set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}" CACHE STRING "" FORCE)
-    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}" CACHE STRING "" FORCE)
 else()
     # GCC/Clang: Enhanced warning flags
     add_compile_options(-Wall -Wextra -Wpedantic)
-    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-        add_compile_options(-g -O0)
-    else()
-        add_compile_options(-O3)
-    endif()
+    # マルチコンフィグジェネレーター対応: ジェネレータ式を使用
+    add_compile_options($<$<CONFIG:Debug>:-g> $<$<CONFIG:Debug>:-O0>)
+    add_compile_options($<$<CONFIG:Release>:-O3>)
 endif()
 
 # Platform-specific settings
