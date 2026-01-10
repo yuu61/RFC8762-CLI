@@ -17,10 +17,6 @@ set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release")
 if(MSVC)
     # MSVC: /W4 for warnings, /utf-8 for UTF-8 source files
     add_compile_options(/W4 /utf-8)
-    # Release構成: /RTC1を無効化（/O2と競合するため）
-    # Visual Studioはマルチコンフィグジェネレーターなので、フラグ変数を直接修正
-    string(REPLACE "/RTC1" "" CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
-    set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}" CACHE STRING "" FORCE)
 else()
     # GCC/Clang: Enhanced warning flags
     add_compile_options(-Wall -Wextra -Wpedantic)
