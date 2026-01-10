@@ -140,11 +140,8 @@ static int reflect_packet(SOCKET sockfd, uint8_t *buffer, int send_len,
 	}
 
 	memset(&sender, 0, sizeof(sender));
-	if (send_len > 0)
-	{
-		int copy_len = send_len < (int)sizeof(sender) ? send_len : (int)sizeof(sender);
-		memcpy(&sender, buffer, copy_len);
-	}
+	int copy_len = send_len < (int)sizeof(sender) ? send_len : (int)sizeof(sender);
+	memcpy(&sender, buffer, copy_len);
 
 	packet = (struct stamp_reflector_packet *)buffer;
 

@@ -26,7 +26,6 @@
 #include <signal.h>
 #ifdef _MSC_VER
 #pragma comment(lib, "ws2_32.lib")
-#pragma comment(lib, "mswsock.lib")
 #endif
 #define SOCKET_ERROR_CHECK(x) ((x) == INVALID_SOCKET)
 #define CLOSE_SOCKET(x) closesocket(x)
@@ -150,9 +149,8 @@ static inline int get_ntp_timestamp(uint32_t *sec, uint32_t *frac)
     uint64_t frac_100ns = ui.QuadPart % WINDOWS_TICKS_PER_SEC;
 
     *sec = htonl((uint32_t)(unix_time + NTP_OFFSET));
-    // 整数演算で精度を保つ: frac_100ns * 2^32 / 10^7
-    // = frac_100ns * 429.4967296 ≈ frac_100ns * 429496729 / 1000000
-    uint64_t frac_val = (frac_100ns * 429496729ULL + 500000ULL) / 1000000ULL;
+    // 整数演算で精度を保つ: frac_100ns * 2^32 / 10^7（厳密計算）
+    uint64_t frac_val = ((frac_100ns << 32) + (WINDOWS_TICKS_PER_SEC / 2)) / WINDOWS_TICKS_PER_SEC;
     *frac = htonl((uint32_t)frac_val);
 #else
 #if defined(CLOCK_REALTIME)
