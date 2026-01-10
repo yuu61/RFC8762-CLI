@@ -52,3 +52,5 @@ compile_commands.json
 # Dependency caches
 .ccls-cache/
 .cache/
+
+bin/act
