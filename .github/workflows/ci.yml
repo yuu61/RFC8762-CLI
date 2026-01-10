@@ -69,7 +69,7 @@ jobs:
       - name: Build (Windows)
         if: runner.os == 'Windows'
         shell: bash
-        run: cmake --build build --config ${{ matrix.build_type }} --parallel 4
+        run: cmake --build build --config ${{ matrix.build_type }} --parallel $NUMBER_OF_PROCESSORS
 
       - name: Run tests (Unix)
         if: runner.os != 'Windows'
@@ -79,4 +79,4 @@ jobs:
       - name: Run tests (Windows)
         if: runner.os == 'Windows'
         shell: bash
-        run: ctest --test-dir build --build-config ${{ matrix.build_type }} --output-on-failure --parallel 4
+        run: ctest --test-dir build --build-config ${{ matrix.build_type }} --output-on-failure --parallel $NUMBER_OF_PROCESSORS
