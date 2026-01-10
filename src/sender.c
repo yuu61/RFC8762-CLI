@@ -139,7 +139,7 @@ static SOCKET init_socket(const char *ip, uint16_t port, struct sockaddr_in *ser
  * @param tx_packet 送信パケットのポインタ
  * @return 成功時0、エラー時-1
  */
-static int send_stamp_packet(int sockfd, uint32_t seq, const struct sockaddr_in *servaddr,
+static int send_stamp_packet(SOCKET sockfd, uint32_t seq, const struct sockaddr_in *servaddr,
                              struct stamp_sender_packet *tx_packet)
 {
     uint32_t t1_sec, t1_frac;
@@ -180,7 +180,7 @@ static int send_stamp_packet(int sockfd, uint32_t seq, const struct sockaddr_in 
  * @param t4_frac T4小数部分（出力）
  * @return 受信バイト数、エラー時-1
  */
-static int recv_with_timestamp(int sockfd, uint8_t *buffer, size_t buffer_len,
+static int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len,
                                struct sockaddr_in *servaddr, socklen_t *len,
                                uint32_t *t4_sec, uint32_t *t4_frac)
 {
@@ -291,7 +291,7 @@ static int recv_with_timestamp(int sockfd, uint8_t *buffer, size_t buffer_len,
  * @param servaddr サーバーアドレス
  * @return 成功時0、エラー時-1
  */
-static int receive_and_process_packet(int sockfd, const struct stamp_sender_packet *tx_packet,
+static int receive_and_process_packet(SOCKET sockfd, const struct stamp_sender_packet *tx_packet,
                                       struct sockaddr_in *servaddr)
 {
     struct stamp_reflector_packet rx_packet;
@@ -325,6 +325,7 @@ static int receive_and_process_packet(int sockfd, const struct stamp_sender_pack
         fprintf(stderr, "Invalid packet received\n");
         return -1;
     }
+
     memcpy(&rx_packet, buffer, sizeof(rx_packet));
 
     // シーケンス番号の確認
@@ -340,6 +341,15 @@ static int receive_and_process_packet(int sockfd, const struct stamp_sender_pack
     double t2 = ntp_to_double(rx_packet.rx_sec, rx_packet.rx_frac);
     double t3 = ntp_to_double(rx_packet.timestamp_sec, rx_packet.timestamp_frac);
     double t4 = ntp_to_double(t4_sec, t4_frac);
+
+    // タイムスタンプの論理的順序を検証
+    // 正常な場合: T1 < T2 < T3 < T4
+    // ただし、クロックオフセットがある場合 T2, T3 の順序が逆転することがある
+    if (t1 > t4)
+    {
+        fprintf(stderr, "Warning: T1 > T4 detected (%.9f > %.9f). Severe clock skew or timestamp error.\n", t1, t4);
+        g_negative_delay_seen = true;
+    }
 
     double forward_delay = (t2 - t1) * 1000.0;
     double backward_delay = (t4 - t3) * 1000.0;
@@ -437,7 +447,17 @@ int main(int argc, char *argv[])
         seq++;
 
 #ifdef _WIN32
-        Sleep(SEND_INTERVAL_SEC * 1000);
+        // Ctrl+Cで中断できるよう、100ms間隔でスリープしてg_runningをチェック
+        {
+            int total_ms = SEND_INTERVAL_SEC * 1000;
+            int sleep_interval_ms = 100;
+            for (int elapsed = 0; elapsed < total_ms && g_running; elapsed += sleep_interval_ms)
+            {
+                int remaining = total_ms - elapsed;
+                int sleep_time = remaining < sleep_interval_ms ? remaining : sleep_interval_ms;
+                Sleep((DWORD)sleep_time);
+            }
+        }
 #else
         sleep(SEND_INTERVAL_SEC);
 #endif

@@ -3,7 +3,6 @@
 
 #define STAMP_DEFINE_GLOBALS
 #include "stamp.h"
-#include <sys/types.h>
 #ifdef _WIN32
 #include <mswsock.h>
 #endif
@@ -65,6 +64,15 @@ static SOCKET init_reflector_socket(uint16_t port)
 		return INVALID_SOCKET;
 	}
 
+#ifdef _WIN32
+	// Windows: ソケットタイムアウトを設定（Ctrl+Cで終了できるようにする）
+	{
+		DWORD timeout_ms = 1000; // 1秒
+		setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO,
+				   (const char *)&timeout_ms, sizeof(timeout_ms));
+	}
+#endif
+
 	// 受信TTL取得の有効化 (可能な場合)
 #ifdef IP_RECVTTL
 	{
@@ -116,7 +124,7 @@ static SOCKET init_reflector_socket(uint16_t port)
  * @param ttl_ipv4 IPv4 TTL値（IPv4の場合）、またはipv6_hop_limit IPv6 Hop Limit値
  * @return 成功時0、エラー時-1
  */
-static int reflect_packet(int sockfd, uint8_t *buffer, int send_len,
+static int reflect_packet(SOCKET sockfd, uint8_t *buffer, int send_len,
 						  const struct sockaddr_in *cliaddr, socklen_t len, uint8_t ttl,
 						  uint32_t t2_sec, uint32_t t2_frac)
 {
@@ -124,12 +132,16 @@ static int reflect_packet(int sockfd, uint8_t *buffer, int send_len,
 	struct stamp_reflector_packet *packet;
 	uint32_t t3_sec, t3_frac;
 
-	memset(&sender, 0, sizeof(sender));
-	if (send_len > 0)
+	// バッファサイズの検証
+	if (send_len <= 0 || send_len > STAMP_MAX_PACKET_SIZE)
 	{
-		int copy_len = send_len < (int)sizeof(sender) ? send_len : (int)sizeof(sender);
-		memcpy(&sender, buffer, copy_len);
+		fprintf(stderr, "Invalid packet size: %d\n", send_len);
+		return -1;
 	}
+
+	memset(&sender, 0, sizeof(sender));
+	int copy_len = send_len < (int)sizeof(sender) ? send_len : (int)sizeof(sender);
+	memcpy(&sender, buffer, copy_len);
 
 	packet = (struct stamp_reflector_packet *)buffer;
 
@@ -173,7 +185,7 @@ static int reflect_packet(int sockfd, uint8_t *buffer, int send_len,
 	return 0;
 }
 
-static int recv_stamp_packet(int sockfd, uint8_t *buffer, int buffer_len,
+static int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
 							 struct sockaddr_in *cliaddr, socklen_t *len, uint8_t *ttl,
 							 uint32_t *t2_sec, uint32_t *t2_frac)
 {
@@ -389,6 +401,11 @@ int main(int argc, char *argv[])
 		{
 			if (!g_running)
 				break;
+#ifdef _WIN32
+			// Windows: タイムアウトエラーは無視してループを継続
+			if (WSAGetLastError() == WSAETIMEDOUT)
+				continue;
+#endif
 			PRINT_SOCKET_ERROR("recvfrom failed");
 			continue;
 		}
@@ -410,9 +427,11 @@ int main(int argc, char *argv[])
 		{
 			const struct stamp_reflector_packet *packet =
 				(const struct stamp_reflector_packet *)buffer;
+			char addr_str[INET_ADDRSTRLEN];
+			inet_ntop(AF_INET, &cliaddr.sin_addr, addr_str, sizeof(addr_str));
 			printf("Reflected packet Seq: %" PRIu32 " from %s:%d (TTL: %d)\n",
 				   (uint32_t)ntohl(packet->sender_seq_num),
-				   inet_ntoa(cliaddr.sin_addr),
+				   addr_str,
 				   ntohs(cliaddr.sin_port),
 				   ttl);
 		}

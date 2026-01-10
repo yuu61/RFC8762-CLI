@@ -4,10 +4,8 @@
 #ifndef STAMP_H
 #define STAMP_H
 
-#ifndef _WIN32
-#ifndef _POSIX_C_SOURCE
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
 #define _POSIX_C_SOURCE 200809L
-#endif
 #endif
 
 #include <stdio.h>
@@ -26,10 +24,9 @@
 #include <mswsock.h>
 #include <windows.h>
 #include <signal.h>
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunknown-pragmas"
+#ifdef _MSC_VER
 #pragma comment(lib, "ws2_32.lib")
-#pragma GCC diagnostic pop
+#endif
 #define SOCKET_ERROR_CHECK(x) ((x) == INVALID_SOCKET)
 #define CLOSE_SOCKET(x) closesocket(x)
 #define SOCKET_ERRNO WSAGetLastError()
@@ -97,7 +94,7 @@ struct stamp_sender_packet
     uint32_t timestamp_sec;  // タイムスタンプ 秒部分 (4 bytes)
     uint32_t timestamp_frac; // タイムスタンプ 小数部分 (4 bytes)
     uint16_t error_estimate; // エラー推定値 (2 bytes)
-    uint8_t mbz[30];         // MBZ (30 bytes)
+    uint8_t mbz[30];         // MBZ (Must Be Zero) - RFC 8762 Section 4.2.1 (30 bytes)
 } PACKED;
 
 // RFC 8762 STAMPパケット構造体 (RFC 4.3.1)
@@ -108,16 +105,16 @@ struct stamp_reflector_packet
     uint32_t timestamp_sec;  // 送信タイムスタンプ 秒部分 (4 bytes)
     uint32_t timestamp_frac; // 送信タイムスタンプ 小数部分 (4 bytes)
     uint16_t error_estimate; // エラー推定値 (2 bytes)
-    uint16_t mbz_1;          // MBZ (2 bytes)
+    uint16_t mbz_1;          // MBZ (Must Be Zero) - RFC 8762 Section 4.3.1 (2 bytes)
     uint32_t rx_sec;         // 受信タイムスタンプ 秒部分 (4 bytes)
     uint32_t rx_frac;        // 受信タイムスタンプ 小数部分 (4 bytes)
     uint32_t sender_seq_num; // Session-Sender Sequence Number (4 bytes)
     uint32_t sender_ts_sec;  // Session-Sender Timestamp 秒部分 (4 bytes)
     uint32_t sender_ts_frac; // Session-Sender Timestamp 小数部分 (4 bytes)
     uint16_t sender_err_est; // Session-Sender Error Estimate (2 bytes)
-    uint16_t mbz_2;          // MBZ (2 bytes)
+    uint16_t mbz_2;          // MBZ (Must Be Zero) - RFC 8762 Section 4.3.1 (2 bytes)
     uint8_t sender_ttl;      // Session-Sender TTL/Hop Limit (1 byte)
-    uint8_t mbz_3[3];        // MBZ (3 bytes)
+    uint8_t mbz_3[3];        // MBZ (Must Be Zero) - RFC 8762 Section 4.3.1 (3 bytes)
 } PACKED;
 
 #ifdef _WIN32
@@ -152,8 +149,9 @@ static inline int get_ntp_timestamp(uint32_t *sec, uint32_t *frac)
     uint64_t frac_100ns = ui.QuadPart % WINDOWS_TICKS_PER_SEC;
 
     *sec = htonl((uint32_t)(unix_time + NTP_OFFSET));
-    double fraction = (double)frac_100ns * NTP_FRAC_SCALE / (double)WINDOWS_TICKS_PER_SEC;
-    *frac = htonl((uint32_t)fraction);
+    // 整数演算で精度を保つ: frac_100ns * 2^32 / 10^7（厳密計算）
+    uint64_t frac_val = ((frac_100ns << 32) + (WINDOWS_TICKS_PER_SEC / 2)) / WINDOWS_TICKS_PER_SEC;
+    *frac = htonl((uint32_t)frac_val);
 #else
 #if defined(CLOCK_REALTIME)
     // UNIX/Linux: clock_gettime を使用
@@ -163,8 +161,10 @@ static inline int get_ntp_timestamp(uint32_t *sec, uint32_t *frac)
         return -1;
     }
     *sec = htonl((uint32_t)(ts.tv_sec + NTP_OFFSET));
-    double fraction = (double)ts.tv_nsec * NTP_FRAC_SCALE / 1000000000.0;
-    *frac = htonl((uint32_t)fraction);
+    // 整数演算で精度を保つ: tv_nsec * 2^32 / 10^9
+    // = tv_nsec * 4294967296 / 1000000000 ≈ tv_nsec * 4.294967296
+    uint64_t frac_val = ((uint64_t)ts.tv_nsec * 4294967296ULL + 500000000ULL) / 1000000000ULL;
+    *frac = htonl((uint32_t)frac_val);
 #else
     // UNIX/Linux: clock_gettime が使えない場合は gettimeofday にフォールバック
     struct timeval tv;
@@ -173,8 +173,10 @@ static inline int get_ntp_timestamp(uint32_t *sec, uint32_t *frac)
         return -1;
     }
     *sec = htonl((uint32_t)(tv.tv_sec + NTP_OFFSET));
-    double fraction = (double)tv.tv_usec * NTP_FRAC_SCALE / 1000000.0;
-    *frac = htonl((uint32_t)fraction);
+    // 整数演算で精度を保つ: tv_usec * 2^32 / 10^6
+    // = tv_usec * 4294967296 / 1000000 ≈ tv_usec * 4294.967296
+    uint64_t frac_val = ((uint64_t)tv.tv_usec * 4294967296ULL + 500000ULL) / 1000000ULL;
+    *frac = htonl((uint32_t)frac_val);
 #endif
 #endif
 
@@ -308,8 +310,9 @@ static inline void timespec_to_ntp(const struct timespec *ts,
                                    uint32_t *ntp_sec, uint32_t *ntp_frac)
 {
     *ntp_sec = htonl((uint32_t)(ts->tv_sec + NTP_OFFSET));
-    double fraction = (double)ts->tv_nsec * NTP_FRAC_SCALE / 1000000000.0;
-    *ntp_frac = htonl((uint32_t)fraction);
+    // 整数演算で精度を保つ: tv_nsec * 2^32 / 10^9
+    uint64_t frac_val = ((uint64_t)ts->tv_nsec * 4294967296ULL + 500000000ULL) / 1000000000ULL;
+    *ntp_frac = htonl((uint32_t)frac_val);
 }
 
 /**
@@ -322,8 +325,9 @@ static inline void timeval_to_ntp(const struct timeval *tv,
                                   uint32_t *ntp_sec, uint32_t *ntp_frac)
 {
     *ntp_sec = htonl((uint32_t)(tv->tv_sec + NTP_OFFSET));
-    double fraction = (double)tv->tv_usec * NTP_FRAC_SCALE / 1000000.0;
-    *ntp_frac = htonl((uint32_t)fraction);
+    // 整数演算で精度を保つ: tv_usec * 2^32 / 10^6
+    uint64_t frac_val = ((uint64_t)tv->tv_usec * 4294967296ULL + 500000ULL) / 1000000ULL;
+    *ntp_frac = htonl((uint32_t)frac_val);
 }
 #endif
 

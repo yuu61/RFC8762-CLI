@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.16)
 project(RFC8762-CLI VERSION 1.0.0 LANGUAGES C)
 
 # C standard settings
-set(CMAKE_C_STANDARD 23)
+set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
@@ -14,9 +14,16 @@ endif()
 set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release")
 
 # Compiler flags
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra")
-set(CMAKE_C_FLAGS_DEBUG "-g -O0 -DDEBUG")
-set(CMAKE_C_FLAGS_RELEASE "-O3 -DNDEBUG")
+if(MSVC)
+    # MSVC: /W4 for warnings, /utf-8 for UTF-8 source files
+    add_compile_options(/W4 /utf-8)
+else()
+    # GCC/Clang: Enhanced warning flags
+    add_compile_options(-Wall -Wextra -Wpedantic)
+    # マルチコンフィグジェネレーター対応: ジェネレータ式を使用
+    add_compile_options($<$<CONFIG:Debug>:-g> $<$<CONFIG:Debug>:-O0>)
+    add_compile_options($<$<CONFIG:Release>:-O3>)
+endif()
 
 # Platform-specific settings
 if(WIN32)
