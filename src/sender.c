@@ -455,18 +455,14 @@ int main(int argc, char *argv[])
         seq++;
 
 #ifdef _WIN32
-        // Ctrl+Cで中断できるよう、短い間隔でスリープしてg_runningをチェック
-        // 最大でも100回のループに制限（10秒まで対応）
-        int sleep_count = SEND_INTERVAL_SEC * 10;
-        if (sleep_count > 100) sleep_count = 100; // 大きな値の場合は上限を設ける
-        for (int i = 0; i < sleep_count && g_running; i++)
+        // Ctrl+Cで中断できるよう、100ms間隔でスリープしてg_runningをチェック
         {
-            Sleep(100);
-        }
-        // 残りの時間がある場合は一度にスリープ
-        if (g_running && SEND_INTERVAL_SEC > 10)
-        {
-            Sleep((DWORD)(SEND_INTERVAL_SEC - 10) * 1000);
+            int total_ms = SEND_INTERVAL_SEC * 1000;
+            int sleep_interval_ms = 100;
+            for (int elapsed = 0; elapsed < total_ms && g_running; elapsed += sleep_interval_ms)
+            {
+                Sleep((DWORD)sleep_interval_ms);
+            }
         }
 #else
         sleep(SEND_INTERVAL_SEC);
