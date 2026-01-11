@@ -61,6 +61,25 @@ typedef int SOCKET;
 #define SOCKET_TIMEOUT_SEC 5
 #define SOCKET_TIMEOUT_USEC 0
 
+// ユーティリティ定数
+#define FIREWALL_CMD_BUFSIZE 256    // ファイアウォールコマンドバッファサイズ
+#define SLEEP_CHECK_INTERVAL_MS 100 // スリープ中の割り込みチェック間隔（ミリ秒）
+
+// NTP小数部変換マクロ (丸め付き)
+// ナノ秒からNTP小数部への変換: nsec * 2^32 / 10^9
+#define NSEC_TO_NTP_FRAC(nsec) \
+    ((uint32_t)(((uint64_t)(nsec) * 4294967296ULL + 500000000ULL) / 1000000000ULL))
+
+// マイクロ秒からNTP小数部への変換: usec * 2^32 / 10^6
+#define USEC_TO_NTP_FRAC(usec) \
+    ((uint32_t)(((uint64_t)(usec) * 4294967296ULL + 500000ULL) / 1000000ULL))
+
+#ifdef _WIN32
+// Windows 100ナノ秒単位からNTP小数部への変換
+#define WINDOWS_100NS_TO_NTP_FRAC(ticks) \
+    ((uint32_t)((((uint64_t)(ticks) << 32) + (WINDOWS_TICKS_PER_SEC / 2)) / WINDOWS_TICKS_PER_SEC))
+#endif
+
 // Error Estimate フィールド (RFC 8762 Section 4.2.1, RFC 4656 Section 4.1.2)
 // Format: |S|Z|Scale(6bits)|Multiplier(8bits)|
 #define ERROR_ESTIMATE_S_BIT      0x8000  // Synchronized flag (bit 15)
@@ -150,10 +169,7 @@ static inline int get_ntp_timestamp(uint32_t *sec, uint32_t *frac)
     uint64_t frac_100ns = ui.QuadPart % WINDOWS_TICKS_PER_SEC;
 
     *sec = htonl((uint32_t)(unix_time + NTP_OFFSET));
-    // 整数演算で精度を保つ: frac_100ns * 2^32 / 10^7（厳密計算）
-    // 丸め誤差を最小化するため (WINDOWS_TICKS_PER_SEC / 2) を加算
-    uint64_t frac_val = ((frac_100ns << 32) + (WINDOWS_TICKS_PER_SEC / 2)) / WINDOWS_TICKS_PER_SEC;
-    *frac = htonl((uint32_t)frac_val);
+    *frac = htonl(WINDOWS_100NS_TO_NTP_FRAC(frac_100ns));
 #else
 #if defined(CLOCK_REALTIME)
     // UNIX/Linux: clock_gettime を使用
@@ -163,11 +179,7 @@ static inline int get_ntp_timestamp(uint32_t *sec, uint32_t *frac)
         return -1;
     }
     *sec = htonl((uint32_t)(ts.tv_sec + NTP_OFFSET));
-    // 整数演算で精度を保つ: tv_nsec * 2^32 / 10^9
-    // = tv_nsec * 4294967296 / 1000000000 ≈ tv_nsec * 4.294967296
-    // 丸め誤差を最小化するため 500000000ULL (0.5 * 10^9) を加算
-    uint64_t frac_val = ((uint64_t)ts.tv_nsec * 4294967296ULL + 500000000ULL) / 1000000000ULL;
-    *frac = htonl((uint32_t)frac_val);
+    *frac = htonl(NSEC_TO_NTP_FRAC(ts.tv_nsec));
 #else
     // UNIX/Linux: clock_gettime が使えない場合は gettimeofday にフォールバック
     struct timeval tv;
@@ -176,10 +188,7 @@ static inline int get_ntp_timestamp(uint32_t *sec, uint32_t *frac)
         return -1;
     }
     *sec = htonl((uint32_t)(tv.tv_sec + NTP_OFFSET));
-    // 整数演算で精度を保つ: tv_usec * 2^32 / 10^6
-    // = tv_usec * 4294967296 / 1000000 ≈ tv_usec * 4294.967296
-    uint64_t frac_val = ((uint64_t)tv.tv_usec * 4294967296ULL + 500000ULL) / 1000000ULL;
-    *frac = htonl((uint32_t)frac_val);
+    *frac = htonl(USEC_TO_NTP_FRAC(tv.tv_usec));
 #endif
 #endif
 
@@ -387,9 +396,7 @@ static inline void timespec_to_ntp(const struct timespec *ts,
                                    uint32_t *ntp_sec, uint32_t *ntp_frac)
 {
     *ntp_sec = htonl((uint32_t)(ts->tv_sec + NTP_OFFSET));
-    // 整数演算で精度を保つ: tv_nsec * 2^32 / 10^9
-    uint64_t frac_val = ((uint64_t)ts->tv_nsec * 4294967296ULL + 500000000ULL) / 1000000000ULL;
-    *ntp_frac = htonl((uint32_t)frac_val);
+    *ntp_frac = htonl(NSEC_TO_NTP_FRAC(ts->tv_nsec));
 }
 
 /**
@@ -402,9 +409,7 @@ static inline void timeval_to_ntp(const struct timeval *tv,
                                   uint32_t *ntp_sec, uint32_t *ntp_frac)
 {
     *ntp_sec = htonl((uint32_t)(tv->tv_sec + NTP_OFFSET));
-    // 整数演算で精度を保つ: tv_usec * 2^32 / 10^6
-    uint64_t frac_val = ((uint64_t)tv->tv_usec * 4294967296ULL + 500000ULL) / 1000000ULL;
-    *ntp_frac = htonl((uint32_t)frac_val);
+    *ntp_frac = htonl(USEC_TO_NTP_FRAC(tv->tv_usec));
 }
 #endif
 

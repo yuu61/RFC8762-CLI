@@ -528,7 +528,7 @@ int main(int argc, char *argv[])
         // Ctrl+Cで中断できるよう、100ms間隔でスリープしてg_runningをチェック
         {
             int total_ms = SEND_INTERVAL_SEC * 1000;
-            int sleep_interval_ms = 100;
+            int sleep_interval_ms = SLEEP_CHECK_INTERVAL_MS;
             for (int elapsed = 0; elapsed < total_ms && g_running; elapsed += sleep_interval_ms)
             {
                 int remaining = total_ms - elapsed;
