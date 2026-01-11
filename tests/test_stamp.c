@@ -49,6 +49,43 @@ static int g_tests_failed = 0;
         }                                                 \
     } while (0)
 
+#define SKIP_TEST(msg)           \
+    do                           \
+    {                            \
+        printf("SKIP: %s\n", msg); \
+    } while (0)
+
+#ifdef _WIN32
+static int init_winsock(void)
+{
+    WSADATA wsa;
+    return WSAStartup(MAKEWORD(2, 2), &wsa);
+}
+#endif
+
+static int ipv6_available(void)
+{
+    struct addrinfo hints;
+    struct addrinfo *result = NULL;
+    int rc;
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET6;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_protocol = IPPROTO_UDP;
+#ifdef AI_NUMERICHOST
+    hints.ai_flags = AI_NUMERICHOST;
+#endif
+
+    rc = getaddrinfo("::1", "0", &hints, &result);
+    if (rc != 0)
+    {
+        return 0;
+    }
+    freeaddrinfo(result);
+    return 1;
+}
+
 static void test_constants(void)
 {
     EXPECT_EQ_ULL(STAMP_PORT, 862, "STAMP_PORT");
@@ -175,6 +212,12 @@ static void test_get_sockaddr_len(void)
                   "get_sockaddr_len AF_INET");
     EXPECT_EQ_ULL(get_sockaddr_len(AF_INET6), sizeof(struct sockaddr_in6),
                   "get_sockaddr_len AF_INET6");
+
+    // 不正なファミリはIPv4サイズにフォールバック
+    EXPECT_EQ_ULL(get_sockaddr_len(AF_UNSPEC), sizeof(struct sockaddr_in),
+                  "get_sockaddr_len AF_UNSPEC fallback");
+    EXPECT_EQ_ULL(get_sockaddr_len(999), sizeof(struct sockaddr_in),
+                  "get_sockaddr_len invalid family fallback");
 }
 
 static void test_sockaddr_get_port(void)
@@ -201,12 +244,22 @@ static void test_sockaddr_get_port(void)
 
     // NULL
     EXPECT_EQ_ULL(sockaddr_get_port(NULL), 0, "sockaddr_get_port NULL");
+
+    // 不正なファミリ
+    memset(&ss, 0, sizeof(ss));
+    ss.ss_family = AF_UNSPEC;
+    EXPECT_EQ_ULL(sockaddr_get_port(&ss), 0, "sockaddr_get_port AF_UNSPEC");
+
+    memset(&ss, 0, sizeof(ss));
+    ss.ss_family = 999;
+    EXPECT_EQ_ULL(sockaddr_get_port(&ss), 0, "sockaddr_get_port invalid family");
 }
 
 static void test_sockaddr_to_string(void)
 {
     struct sockaddr_storage ss;
     char buf[INET6_ADDRSTRLEN];
+    int ipv6_ok = ipv6_available();
 
     // IPv4
     memset(&ss, 0, sizeof(ss));
@@ -219,43 +272,138 @@ static void test_sockaddr_to_string(void)
                 "sockaddr_to_string IPv4 success");
     EXPECT_TRUE(strcmp(buf, "127.0.0.1") == 0, "sockaddr_to_string IPv4 value");
 
-    // IPv6
+    // IPv4 別のアドレス
     memset(&ss, 0, sizeof(ss));
     {
-        struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&ss;
-        sin6->sin6_family = AF_INET6;
-        inet_pton(AF_INET6, "::1", &sin6->sin6_addr);
+        struct sockaddr_in *sin = (struct sockaddr_in *)&ss;
+        sin->sin_family = AF_INET;
+        inet_pton(AF_INET, "192.168.1.1", &sin->sin_addr);
     }
     EXPECT_TRUE(sockaddr_to_string(&ss, buf, sizeof(buf)) != NULL,
-                "sockaddr_to_string IPv6 success");
-    EXPECT_TRUE(strcmp(buf, "::1") == 0, "sockaddr_to_string IPv6 value");
+                "sockaddr_to_string IPv4 192.168.1.1 success");
+    EXPECT_TRUE(strcmp(buf, "192.168.1.1") == 0, "sockaddr_to_string IPv4 192.168.1.1 value");
+
+    if (ipv6_ok)
+    {
+        // IPv6 loopback
+        memset(&ss, 0, sizeof(ss));
+        {
+            struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&ss;
+            sin6->sin6_family = AF_INET6;
+            inet_pton(AF_INET6, "::1", &sin6->sin6_addr);
+        }
+        EXPECT_TRUE(sockaddr_to_string(&ss, buf, sizeof(buf)) != NULL,
+                    "sockaddr_to_string IPv6 loopback success");
+        EXPECT_TRUE(strcmp(buf, "::1") == 0, "sockaddr_to_string IPv6 loopback value");
+
+        // IPv6 full address
+        memset(&ss, 0, sizeof(ss));
+        {
+            struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&ss;
+            sin6->sin6_family = AF_INET6;
+            inet_pton(AF_INET6, "2001:db8::1", &sin6->sin6_addr);
+        }
+        EXPECT_TRUE(sockaddr_to_string(&ss, buf, sizeof(buf)) != NULL,
+                    "sockaddr_to_string IPv6 2001:db8::1 success");
+        EXPECT_TRUE(strcmp(buf, "2001:db8::1") == 0, "sockaddr_to_string IPv6 2001:db8::1 value");
+    }
+    else
+    {
+        SKIP_TEST("sockaddr_to_string IPv6 not available");
+    }
 
     // NULL cases
     EXPECT_TRUE(sockaddr_to_string(NULL, buf, sizeof(buf)) == NULL,
                 "sockaddr_to_string NULL addr");
     EXPECT_TRUE(sockaddr_to_string(&ss, NULL, sizeof(buf)) == NULL,
                 "sockaddr_to_string NULL buf");
+
+    // buflen = 0
+    EXPECT_TRUE(sockaddr_to_string(&ss, buf, 0) == NULL,
+                "sockaddr_to_string buflen 0");
+
+    // 不正なファミリ
+    memset(&ss, 0, sizeof(ss));
+    ss.ss_family = AF_UNSPEC;
+    EXPECT_TRUE(sockaddr_to_string(&ss, buf, sizeof(buf)) == NULL,
+                "sockaddr_to_string AF_UNSPEC");
+
+    memset(&ss, 0, sizeof(ss));
+    ss.ss_family = 999;
+    EXPECT_TRUE(sockaddr_to_string(&ss, buf, sizeof(buf)) == NULL,
+                "sockaddr_to_string invalid family");
 }
 
 static void test_resolve_address(void)
 {
     struct sockaddr_storage ss;
     socklen_t len;
+    int ipv6_ok = ipv6_available();
 
     // IPv4 loopback
+    len = 0;
     EXPECT_TRUE(resolve_address("127.0.0.1", 862, AF_INET, &ss, &len) == 0,
                 "resolve_address IPv4 loopback");
     EXPECT_EQ_ULL(ss.ss_family, AF_INET, "resolve_address IPv4 family");
     EXPECT_EQ_ULL(sockaddr_get_port(&ss), 862, "resolve_address IPv4 port");
+    EXPECT_EQ_ULL(len, sizeof(struct sockaddr_in), "resolve_address IPv4 len");
 
-    // IPv6 loopback
-    EXPECT_TRUE(resolve_address("::1", 862, AF_INET6, &ss, &len) == 0,
-                "resolve_address IPv6 loopback");
-    EXPECT_EQ_ULL(ss.ss_family, AF_INET6, "resolve_address IPv6 family");
-    EXPECT_EQ_ULL(sockaddr_get_port(&ss), 862, "resolve_address IPv6 port");
+    if (ipv6_ok)
+    {
+        // IPv6 loopback
+        len = 0;
+        EXPECT_TRUE(resolve_address("::1", 862, AF_INET6, &ss, &len) == 0,
+                    "resolve_address IPv6 loopback");
+        EXPECT_EQ_ULL(ss.ss_family, AF_INET6, "resolve_address IPv6 family");
+        EXPECT_EQ_ULL(sockaddr_get_port(&ss), 862, "resolve_address IPv6 port");
+        EXPECT_EQ_ULL(len, sizeof(struct sockaddr_in6), "resolve_address IPv6 len");
+    }
+    else
+    {
+        SKIP_TEST("resolve_address IPv6 loopback");
+    }
+
+    // AF_UNSPEC (自動検出) - IPv4アドレス
+    len = 0;
+    EXPECT_TRUE(resolve_address("127.0.0.1", 8080, AF_UNSPEC, &ss, &len) == 0,
+                "resolve_address AF_UNSPEC with IPv4");
+    EXPECT_EQ_ULL(ss.ss_family, AF_INET, "resolve_address AF_UNSPEC IPv4 family");
+    EXPECT_EQ_ULL(sockaddr_get_port(&ss), 8080, "resolve_address AF_UNSPEC IPv4 port");
+
+    // AF_UNSPEC (自動検出) - IPv6アドレス
+    if (ipv6_ok)
+    {
+        len = 0;
+        EXPECT_TRUE(resolve_address("::1", 8080, AF_UNSPEC, &ss, &len) == 0,
+                    "resolve_address AF_UNSPEC with IPv6");
+        EXPECT_EQ_ULL(ss.ss_family, AF_INET6, "resolve_address AF_UNSPEC IPv6 family");
+        EXPECT_EQ_ULL(sockaddr_get_port(&ss), 8080, "resolve_address AF_UNSPEC IPv6 port");
+    }
+    else
+    {
+        SKIP_TEST("resolve_address AF_UNSPEC IPv6");
+    }
+
+    // ホスト名解決 (localhost)
+    len = 0;
+    EXPECT_TRUE(resolve_address("localhost", 862, AF_INET, &ss, &len) == 0,
+                "resolve_address localhost IPv4");
+    EXPECT_EQ_ULL(ss.ss_family, AF_INET, "resolve_address localhost family");
+    EXPECT_EQ_ULL(sockaddr_get_port(&ss), 862, "resolve_address localhost port");
+
+    // 異なるポート番号
+    len = 0;
+    EXPECT_TRUE(resolve_address("127.0.0.1", 65535, AF_INET, &ss, &len) == 0,
+                "resolve_address max port");
+    EXPECT_EQ_ULL(sockaddr_get_port(&ss), 65535, "resolve_address max port value");
+
+    len = 0;
+    EXPECT_TRUE(resolve_address("127.0.0.1", 1, AF_INET, &ss, &len) == 0,
+                "resolve_address min port");
+    EXPECT_EQ_ULL(sockaddr_get_port(&ss), 1, "resolve_address min port value");
 
     // Invalid address
-    EXPECT_TRUE(resolve_address("invalid.address.example", 862, AF_INET, &ss, &len) != 0,
+    EXPECT_TRUE(resolve_address("invalid.invalid", 862, AF_INET, &ss, &len) != 0,
                 "resolve_address invalid hostname");
 
     // NULL cases
@@ -263,10 +411,26 @@ static void test_resolve_address(void)
                 "resolve_address NULL host");
     EXPECT_TRUE(resolve_address("127.0.0.1", 862, AF_INET, NULL, &len) != 0,
                 "resolve_address NULL out_addr");
+    EXPECT_TRUE(resolve_address("127.0.0.1", 862, AF_INET, &ss, NULL) != 0,
+                "resolve_address NULL out_addrlen");
+
+    // ファミリ不一致
+    EXPECT_TRUE(resolve_address("127.0.0.1", 862, AF_INET6, &ss, &len) != 0,
+                "resolve_address IPv4 addr with AF_INET6");
+    EXPECT_TRUE(resolve_address("::1", 862, AF_INET, &ss, &len) != 0,
+                "resolve_address IPv6 addr with AF_INET");
 }
 
 int main(void)
 {
+#ifdef _WIN32
+    if (init_winsock() != 0)
+    {
+        printf("FAIL: WSAStartup\n");
+        return 1;
+    }
+#endif
+
     test_constants();
     test_struct_layout();
     test_validate_stamp_packet();
@@ -282,9 +446,15 @@ int main(void)
     if (g_tests_failed == 0)
     {
         printf("PASS: %d tests\n", g_tests_run);
+#ifdef _WIN32
+        WSACleanup();
+#endif
         return 0;
     }
 
     printf("FAIL: %d of %d tests\n", g_tests_failed, g_tests_run);
+#ifdef _WIN32
+    WSACleanup();
+#endif
     return 1;
 }
