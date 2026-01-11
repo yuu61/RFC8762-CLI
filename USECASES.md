@@ -38,6 +38,63 @@
 ./build/sender 192.168.1.100 8888
 ```
 
+### IPv6 での測定
+
+IPv6ネットワークでの性能測定を行います。
+
+```bash
+# ターミナル1: Reflectorを起動（デュアルスタック）
+./build/reflector
+
+# ターミナル2: IPv6でSenderを起動
+./build/sender ::1
+```
+
+IPv6アドレスでリモートホストに接続：
+
+```bash
+./build/sender 2001:db8::1
+./build/sender fe80::1%eth0    # リンクローカルアドレス（ゾーン識別子のサポートはOSやライブラリ実装に依存します）
+                               # ※ 環境によっては「fe80::1%eth0」が解決できない場合があります。
+                               #    その場合は対応するインターフェース名の指定方法をOSの仕様で確認してください。
+```
+
+### ホスト名での接続
+
+IPアドレスの代わりにホスト名を使用できます：
+
+```bash
+# ホスト名で接続（自動的にIPv4/IPv6が選択される）
+./build/sender example.com
+
+# ホスト名でカスタムポート接続
+./build/sender example.com 8888
+```
+
+### アドレスファミリの強制指定
+
+デュアルスタック環境で明示的にアドレスファミリを指定できます：
+
+```bash
+# Reflector: IPv4のみ
+./build/reflector -4
+
+# Reflector: IPv6のみ
+./build/reflector -6
+
+# Sender: IPv4を強制
+./build/sender -4 192.168.1.100
+
+# Sender: IPv6を強制
+./build/sender -6 ::1
+
+# ホスト名をIPv4で解決
+./build/sender -4 example.com
+
+# ホスト名をIPv6で解決
+./build/sender -6 example.com
+```
+
 ## 実践的なユースケース
 
 ### ネットワーク品質の監視
@@ -77,7 +134,7 @@ VPN接続前後でRTTを比較し、VPNのオーバーヘッドを測定しま�
 
 ### 出力カラムの説明
 
-```
+```bash
 Seq  Fwd(ms)   Bwd(ms)   RTT(ms)  Offset(ms)  [adj_Fwd]  [adj_Bwd]
 ```
 
@@ -92,12 +149,14 @@ Seq  Fwd(ms)   Bwd(ms)   RTT(ms)  Offset(ms)  [adj_Fwd]  [adj_Bwd]
 | [adj_Bwd] | 補正復路遅延 | Bwd + Offset |
 
 **タイムスタンプの意味:**
+
 - T1: Senderがパケットを送信した時刻
 - T2: Reflectorがパケットを受信した時刻
 - T3: Reflectorがパケットを返送した時刻
 - T4: Senderがパケットを受信した時刻
 
 **Offset（クロックオフセット）について:**
+
 - 正の値: Reflectorの時計がSenderより進んでいる
 - 負の値: Reflectorの時計がSenderより遅れている
 - 0に近い値: 両者の時計がほぼ同期している
@@ -107,7 +166,7 @@ Seq  Fwd(ms)   Bwd(ms)   RTT(ms)  Offset(ms)  [adj_Fwd]  [adj_Bwd]
 
 ### 正常な測定（ローカルホスト）
 
-```
+```bash
 STAMP Sender targeting 127.0.0.1:862
 Press Ctrl+C to stop and show statistics
 Seq  Fwd(ms)   Bwd(ms)   RTT(ms)  Offset(ms)  [adj_Fwd]  [adj_Bwd]
@@ -125,7 +184,7 @@ RTT min/avg/max = 0.300/0.300/0.300 ms
 
 ### パケットロスがある場合
 
-```
+```bash
 STAMP Sender targeting 192.168.1.100:862
 Seq  Fwd(ms)   Bwd(ms)   RTT(ms)  Offset(ms)  [adj_Fwd]  [adj_Bwd]
 --------------------------------------------------------------------------------------------
@@ -146,7 +205,7 @@ RTT min/avg/max = 1.012/1.012/1.012 ms
 
 SenderとReflectorの時計が同期していない場合、Offsetが大きくなります：
 
-```
+```bash
 Seq  Fwd(ms)   Bwd(ms)   RTT(ms)  Offset(ms)  [adj_Fwd]  [adj_Bwd]
 --------------------------------------------------------------------------------------------
 0    15.523    -14.489   1.034    15.006      0.517      0.517
@@ -156,7 +215,8 @@ Seq  Fwd(ms)   Bwd(ms)   RTT(ms)  Offset(ms)  [adj_Fwd]  [adj_Bwd]
 この例では、Reflectorの時計がSenderより約15ms進んでいます。生のFwd/Bwdは非対称ですが、補正値は対称になっています。
 
 **注意:** 負の遅延が検出された場合、警告メッセージが表示されます：
-```
+
+```bash
 Warning: Negative delay detected (clock skew?)
 ```
 
@@ -165,7 +225,8 @@ Warning: Negative delay detected (clock skew?)
 ### シナリオ1: タイムアウトが頻発する
 
 **症状:**
-```
+
+```bash
 Seq=1, Timeout
 Seq=2, Timeout
 Seq=3, RTT=0.234 ms
@@ -173,11 +234,13 @@ Seq=4, Timeout
 ```
 
 **考えられる原因:**
+
 - ネットワークの輻輳
 - パケットロス率が高い
 - Reflectorの負荷が高い
 
 **対処法:**
+
 - ネットワーク経路を確認
 - Reflectorのリソース使用状況を確認
 - ファイアウォール設定を確認
@@ -185,17 +248,20 @@ Seq=4, Timeout
 ### シナリオ2: 接続できない
 
 **症状:**
-```
+
+```bash
 Error: sendto() failed
 Connection timeout
 ```
 
 **考えられる原因:**
+
 - Reflectorが起動していない
 - ファイアウォールでUDPがブロックされている
 - IPアドレスまたはポート番号が間違っている
 
 **対処法:**
+
 1. Reflectorが起動していることを確認
 2. ファイアウォールでUDP 862番ポートを許可
 3. IPアドレスとポート番号を再確認
@@ -203,25 +269,79 @@ Connection timeout
 ### シナリオ3: ビルドエラー
 
 **症状 (Windows):**
-```
+
+```bash
 fatal error: winsock2.h: No such file or directory
 ```
 
 **対処法:**
-- MinGW-w64またはMSVCを使用
+
+- MinGW-w64（GCC 14以降）を使用
 
 **症状 (Linux):**
-```
+
+```bash
 undefined reference to clock_gettime
 ```
 
 **対処法:**
+
 - 古いシステムでは `librt-dev` パッケージをインストール（CMakeが自動でリンクします）
 
 **症状:**
-```
+
+```bash
 CMake Error: Could not find CMAKE_PROJECT_VERSION
 ```
 
 **対処法:**
+
 - CMake 3.16以上をインストール
+
+### シナリオ4: IPv6関連の問題
+
+#### 症状: IPv6で接続できない
+
+```bash
+Error: getaddrinfo failed
+```
+
+**考えられる原因:**
+
+- システムでIPv6が無効化されている
+- ネットワークがIPv6をサポートしていない
+- ファイアウォールでIPv6がブロックされている
+
+**対処法:**
+
+1. IPv6が有効か確認：`ip -6 addr show`（Linux）または `ipconfig`（Windows）
+2. `-4` オプションでIPv4を強制使用：`./build/sender -4 127.0.0.1`
+3. ファイアウォールでUDP 862番ポートのIPv6を許可
+
+#### 症状: デュアルスタックでIPv4クライアントから接続できない
+
+**考えられる原因:**
+
+- Reflectorが `-6` オプションで起動されている
+
+**対処法:**
+
+- Reflectorをオプションなしで起動（デュアルスタック）するか、`-4` で起動
+
+#### 症状: ホスト名の解決に失敗
+
+```bash
+Error: getaddrinfo failed
+```
+
+**考えられる原因:**
+
+- DNSサーバーに接続できない
+- ホスト名が存在しない
+- 指定されたアドレスファミリのレコードがない
+
+**対処法:**
+
+1. `nslookup` や `dig` でホスト名を確認
+2. IPアドレスを直接指定
+3. `-4` または `-6` を外して自動選択に任せる

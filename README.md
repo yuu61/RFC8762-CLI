@@ -14,6 +14,8 @@ STAMPは、ネットワークの性能測定を行うための標準化された
 - **RTT (Round-Trip Time) 測定**: パケットの往復時間を精密に測定
 - **遅延測定**: 一方向および双方向の遅延を計測
 - **統計情報**: パケット送受信数、最小/最大/平均RTTを表示
+- **IPv4/IPv6 デュアルスタック対応**: IPv4とIPv6の両方に対応
+- **ホスト名解決**: IPアドレスだけでなくホスト名でも指定可能
 - **クロスプラットフォーム対応**: Windows、Linux、macOS で動作
 
 ### 関連ドキュメント
@@ -25,7 +27,7 @@ STAMPは、ネットワークの性能測定を行うための標準化された
 
 ## 必要な環境
 
-- C コンパイラ (GCC, Clang, MSVC など)
+- C コンパイラ (GCC 14以降)
 - C2x 標準サポート
 - CMake 3.16 以上
 
@@ -52,21 +54,26 @@ cmake --build --preset release
 ```
 
 実行ファイルは `build/` ディレクトリに生成されます：
-- `build/reflector` - Reflector (パケット反射側)
-- `build/sender` - Sender (パケット送信側)
+
+- `build/debug/reflector` - Reflector (デバッグ版)
+- `build/debug/sender` - Sender (デバッグ版)
+- `build/release/reflector` - Reflector (リリース版)
+- `build/release/sender` - Sender (リリース版)
 
 ### テストの実行
 
 ```bash
-ctest --preset test
+ctest --preset debug
+# または
+ctest --preset release
 ```
 
 ### クリーンアップ
 
 ```bash
-# 各ビルドのクリーン
-cmake --build --preset release --target clean
-cmake --build --preset debug --target clean
+# 各ビルドディレクトリを削除
+cmake -E rm -rf build/debug
+cmake -E rm -rf build/release
 
 # 全てのビルドを削除
 cmake -E rm -rf build
@@ -77,17 +84,20 @@ cmake -E rm -rf build
 ### クイックスタート
 
 **1. Reflector の起動（サーバー側）:**
+
 ```bash
-./build/reflector
+./build/release/reflector
 ```
 
 **2. Sender の起動（クライアント側）:**
+
 ```bash
-./build/sender 127.0.0.1
+./build/release/sender 127.0.0.1
 ```
 
 **出力例:**
-```
+
+```bash
 STAMP Sender targeting 127.0.0.1:862
 Press Ctrl+C to stop and show statistics
 Seq  Fwd(ms)   Bwd(ms)   RTT(ms)  Offset(ms)  [adj_Fwd]  [adj_Bwd]
@@ -106,24 +116,58 @@ RTT min/avg/max = 0.300/0.300/0.300 ms
 ### 基本的なコマンド
 
 ```bash
-# デフォルトポート (862) で起動
-./build/reflector
+# デフォルトポート (862) で起動（デュアルスタック）
+./build/release/reflector
 
 # カスタムポート (8888) で起動
-./build/reflector 8888
+./build/release/reflector 8888
 
 # リモートホストに接続
-./build/sender 192.168.1.100
+./build/release/sender 192.168.1.100
 
 # カスタムポートで接続
-./build/sender 192.168.1.100 8888
+./build/release/sender 192.168.1.100 8888
+```
+
+### ファイアウォール自動設定（Linux/UNIX）
+Reflector を root 権限で起動すると、iptables/ip6tables で UDP ポート許可ルールを自動追加・削除します。`system()` を利用するため、運用環境では内容を確認し、不要であれば非 root で起動してください。
+
+### IPv6 での使用
+
+```bash
+# IPv6 ローカルホストに接続
+./build/release/sender ::1
+
+# IPv6 アドレスに接続
+./build/release/sender 2001:db8::1
+
+# ホスト名で接続（自動解決）
+./build/release/sender example.com
+```
+
+### アドレスファミリの指定
+
+```bash
+# IPv4 を強制
+./build/release/sender -4 192.168.1.100
+./build/release/reflector -4
+
+# IPv6 を強制
+./build/release/sender -6 ::1
+./build/release/reflector -6
+
+# ホスト名を IPv4 で解決
+./build/release/sender -4 example.com
+
+# ホスト名を IPv6 で解決
+./build/release/sender -6 example.com
 ```
 
 **より詳しい使用例は [USECASES.md](USECASES.md) をご覧ください。**
 
 ## プロジェクト構成
 
-```
+```bash
 RFC8762/
 ├── CMakeLists.txt        # CMake ビルド設定
 ├── CMakePresets.json     # CMake プリセット
@@ -178,15 +222,19 @@ RFC8762/
 ### よくある問題
 
 **ビルドエラー: `winsock2.h: No such file or directory`**
+
 - MinGW-w64またはMSVCを使用してください
 
 **ビルドエラー: `undefined reference to clock_gettime`**
+
 - Linuxでは `librt-dev` パッケージが必要です（CMakeが自動でリンクします）
 
 **実行エラー: `bind: Address already in use`**
+
 - 別のReflectorが実行中です。ポート番号を変更してください
 
 **接続エラー: `Connection timeout`**
+
 - Reflectorが起動しているか、ファイアウォールでUDP通信が許可されているか確認してください
 
 **詳細なトラブルシューティングは [USECASES.md](USECASES.md) をご覧ください。**
