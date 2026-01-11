@@ -334,6 +334,107 @@ static void test_sockaddr_to_string(void)
                 "sockaddr_to_string invalid family");
 }
 
+// IPv6ソケット通信の実際のテスト
+static void test_ipv6_socket_communication(void)
+{
+    int ipv6_ok = ipv6_available();
+    if (!ipv6_ok)
+    {
+        SKIP_TEST("IPv6 socket communication (IPv6 not available)");
+        return;
+    }
+
+    // 送信側ソケット作成
+    SOCKET send_sock = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+    if (SOCKET_ERROR_CHECK(send_sock))
+    {
+        SKIP_TEST("IPv6 socket communication (socket creation failed)");
+        return;
+    }
+
+    // 受信側ソケット作成とバインド
+    SOCKET recv_sock = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+    if (SOCKET_ERROR_CHECK(recv_sock))
+    {
+        CLOSE_SOCKET(send_sock);
+        SKIP_TEST("IPv6 socket communication (recv socket creation failed)");
+        return;
+    }
+
+    // IPv6ループバックアドレスにバインド
+    struct sockaddr_in6 recv_addr;
+    memset(&recv_addr, 0, sizeof(recv_addr));
+    recv_addr.sin6_family = AF_INET6;
+    recv_addr.sin6_addr = in6addr_loopback;
+    recv_addr.sin6_port = htons(0); // OSに自動割り当てさせる
+
+    if (bind(recv_sock, (struct sockaddr *)&recv_addr, sizeof(recv_addr)) < 0)
+    {
+        CLOSE_SOCKET(send_sock);
+        CLOSE_SOCKET(recv_sock);
+        SKIP_TEST("IPv6 socket communication (bind failed)");
+        return;
+    }
+
+    // バインドされたポート番号を取得
+    socklen_t addr_len = sizeof(recv_addr);
+    if (getsockname(recv_sock, (struct sockaddr *)&recv_addr, &addr_len) < 0)
+    {
+        CLOSE_SOCKET(send_sock);
+        CLOSE_SOCKET(recv_sock);
+        SKIP_TEST("IPv6 socket communication (getsockname failed)");
+        return;
+    }
+
+    uint16_t test_port = ntohs(recv_addr.sin6_port);
+
+    // 送信先アドレス設定
+    struct sockaddr_in6 dest_addr;
+    memset(&dest_addr, 0, sizeof(dest_addr));
+    dest_addr.sin6_family = AF_INET6;
+    dest_addr.sin6_addr = in6addr_loopback;
+    dest_addr.sin6_port = htons(test_port);
+
+    // テストデータ送信
+    const char test_msg[] = "IPv6 test message";
+    int send_result = sendto(send_sock, test_msg, (int)strlen(test_msg), 0,
+                             (struct sockaddr *)&dest_addr, sizeof(dest_addr));
+
+    EXPECT_TRUE(send_result > 0, "IPv6 sendto success");
+
+    if (send_result > 0)
+    {
+        // 受信テスト (タイムアウト設定)
+#ifdef _WIN32
+        DWORD timeout_ms = 1000;
+        setsockopt(recv_sock, SOL_SOCKET, SO_RCVTIMEO,
+                   (const char *)&timeout_ms, sizeof(timeout_ms));
+#else
+        struct timeval tv;
+        tv.tv_sec = 1;
+        tv.tv_usec = 0;
+        setsockopt(recv_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+#endif
+
+        char recv_buf[256];
+        struct sockaddr_in6 from_addr;
+        socklen_t from_len = sizeof(from_addr);
+        int recv_result = recvfrom(recv_sock, recv_buf, sizeof(recv_buf) - 1, 0,
+                                   (struct sockaddr *)&from_addr, &from_len);
+
+        EXPECT_TRUE(recv_result > 0, "IPv6 recvfrom success");
+        if (recv_result > 0)
+        {
+            recv_buf[recv_result] = '\0';
+            EXPECT_TRUE(strcmp(recv_buf, test_msg) == 0, "IPv6 message content match");
+            EXPECT_EQ_ULL(from_addr.sin6_family, AF_INET6, "IPv6 from_addr family");
+        }
+    }
+
+    CLOSE_SOCKET(send_sock);
+    CLOSE_SOCKET(recv_sock);
+}
+
 static void test_resolve_address(void)
 {
     struct sockaddr_storage ss;
@@ -449,6 +550,8 @@ int main(void)
     test_sockaddr_get_port();
     test_sockaddr_to_string();
     test_resolve_address();
+    // IPv6通信テスト
+    test_ipv6_socket_communication();
 
     if (g_tests_failed == 0)
     {
