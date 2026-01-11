@@ -50,12 +50,14 @@ RFC 8762 STAMP実装プロジェクトへの貢献を歓迎します！
 コードの貢献は以下の手順で行ってください：
 
 1. **Forkとクローン**
+
    ```bash
    git clone https://github.com/yourusername/RFC8762.git
    cd RFC8762
    ```
 
 2. **ブランチの作成**
+
    ```bash
    git checkout -b feature/your-feature-name
    ```
@@ -66,21 +68,25 @@ RFC 8762 STAMP実装プロジェクトへの貢献を歓迎します！
    - テストを追加/更新
 
 4. **テストの実行**
+
    ```bash
    make clean
    make test
    ```
 
 5. **コミット**
+
    ```bash
    git add .
    git commit -m "Add: 簡潔な変更内容の説明"
    ```
 
 6. **プッシュとプルリクエスト**
+
    ```bash
    git push origin feature/your-feature-name
    ```
+
    - GitHubでプルリクエストを作成
    - 変更内容を詳しく説明
 
@@ -95,12 +101,15 @@ RFC 8762 STAMP実装プロジェクトへの貢献を歓迎します！
   - マクロ: `UPPER_CASE`
   - 構造体: `snake_case`
 - **括弧**: K&Rスタイル
+
   ```c
   if (condition) {
       // コード
   }
   ```
+
 - **コメント**: 英語または日本語で明確に
+
   ```c
   // 単一行コメント
 
@@ -148,7 +157,7 @@ make test
 
 コミットメッセージは以下の形式に従ってください：
 
-```
+```git
 <タイプ>: <簡潔な説明>
 
 <詳細な説明（オプション）>
@@ -157,6 +166,7 @@ make test
 ```
 
 **タイプ:**
+
 - `Add:` 新機能の追加
 - `Fix:` バグ修正
 - `Update:` 既存機能の更新
@@ -166,7 +176,8 @@ make test
 - `Build:` ビルドシステムの変更
 
 **例:**
-```
+
+```git
 Fix: Reflectorでのメモリリークを修正
 
 受信したパケットのメモリを適切に解放するように修正。

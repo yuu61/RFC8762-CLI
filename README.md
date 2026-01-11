@@ -14,6 +14,8 @@ STAMPは、ネットワークの性能測定を行うための標準化された
 - **RTT (Round-Trip Time) 測定**: パケットの往復時間を精密に測定
 - **遅延測定**: 一方向および双方向の遅延を計測
 - **統計情報**: パケット送受信数、最小/最大/平均RTTを表示
+- **IPv4/IPv6 デュアルスタック対応**: IPv4とIPv6の両方に対応
+- **ホスト名解決**: IPアドレスだけでなくホスト名でも指定可能
 - **クロスプラットフォーム対応**: Windows、Linux、macOS で動作
 
 ### 関連ドキュメント
@@ -52,6 +54,7 @@ cmake --build --preset release
 ```
 
 実行ファイルは `build/` ディレクトリに生成されます：
+
 - `build/reflector` - Reflector (パケット反射側)
 - `build/sender` - Sender (パケット送信側)
 
@@ -77,17 +80,20 @@ cmake -E rm -rf build
 ### クイックスタート
 
 **1. Reflector の起動（サーバー側）:**
+
 ```bash
 ./build/reflector
 ```
 
 **2. Sender の起動（クライアント側）:**
+
 ```bash
 ./build/sender 127.0.0.1
 ```
 
 **出力例:**
-```
+
+```bash
 STAMP Sender targeting 127.0.0.1:862
 Press Ctrl+C to stop and show statistics
 Seq  Fwd(ms)   Bwd(ms)   RTT(ms)  Offset(ms)  [adj_Fwd]  [adj_Bwd]
@@ -106,7 +112,7 @@ RTT min/avg/max = 0.300/0.300/0.300 ms
 ### 基本的なコマンド
 
 ```bash
-# デフォルトポート (862) で起動
+# デフォルトポート (862) で起動（デュアルスタック）
 ./build/reflector
 
 # カスタムポート (8888) で起動
@@ -119,11 +125,42 @@ RTT min/avg/max = 0.300/0.300/0.300 ms
 ./build/sender 192.168.1.100 8888
 ```
 
+### IPv6 での使用
+
+```bash
+# IPv6 ローカルホストに接続
+./build/sender ::1
+
+# IPv6 アドレスに接続
+./build/sender 2001:db8::1
+
+# ホスト名で接続（自動解決）
+./build/sender example.com
+```
+
+### アドレスファミリの指定
+
+```bash
+# IPv4 を強制
+./build/sender -4 192.168.1.100
+./build/reflector -4
+
+# IPv6 を強制
+./build/sender -6 ::1
+./build/reflector -6
+
+# ホスト名を IPv4 で解決
+./build/sender -4 example.com
+
+# ホスト名を IPv6 で解決
+./build/sender -6 example.com
+```
+
 **より詳しい使用例は [USECASES.md](USECASES.md) をご覧ください。**
 
 ## プロジェクト構成
 
-```
+```bash
 RFC8762/
 ├── CMakeLists.txt        # CMake ビルド設定
 ├── CMakePresets.json     # CMake プリセット
@@ -178,15 +215,19 @@ RFC8762/
 ### よくある問題
 
 **ビルドエラー: `winsock2.h: No such file or directory`**
+
 - MinGW-w64またはMSVCを使用してください
 
 **ビルドエラー: `undefined reference to clock_gettime`**
+
 - Linuxでは `librt-dev` パッケージが必要です（CMakeが自動でリンクします）
 
 **実行エラー: `bind: Address already in use`**
+
 - 別のReflectorが実行中です。ポート番号を変更してください
 
 **接続エラー: `Connection timeout`**
+
 - Reflectorが起動しているか、ファイアウォールでUDP通信が許可されているか確認してください
 
 **詳細なトラブルシューティングは [USECASES.md](USECASES.md) をご覧ください。**

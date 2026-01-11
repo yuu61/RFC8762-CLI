@@ -57,22 +57,40 @@ static void print_statistics(void)
 
 static void print_usage(const char *prog)
 {
-    fprintf(stderr, "Usage: %s [server_ip] [port]\n", prog ? prog : "sender");
+    fprintf(stderr, "Usage: %s [-4|-6] [server_ip|hostname] [port]\n", prog ? prog : "sender");
+    fprintf(stderr, "Options:\n");
+    fprintf(stderr, "  -4    Force IPv4\n");
+    fprintf(stderr, "  -6    Force IPv6\n");
+    fprintf(stderr, "  (default: auto-detect from address format)\n");
 }
 
 /**
  * ソケットの初期化とタイムアウト設定 (RFC 8762 Section 3)
- * @param ip サーバーIPアドレス
+ * @param host サーバーIPアドレスまたはホスト名
  * @param port 宛先ポート番号
  * @param servaddr サーバーアドレス構造体のポインタ
+ * @param servaddr_len アドレス構造体のサイズを格納するポインタ
+ * @param af_hint アドレスファミリのヒント (AF_UNSPEC=自動, AF_INET, AF_INET6)
  * @return ソケットディスクリプタ、エラー時INVALID_SOCKET
  */
-static SOCKET init_socket(const char *ip, uint16_t port, struct sockaddr_in *servaddr)
+static SOCKET init_socket(const char *host, uint16_t port,
+                          struct sockaddr_storage *servaddr, socklen_t *servaddr_len,
+                          int af_hint)
 {
     SOCKET sockfd;
+    int family;
+
+    // ホスト名/IPアドレスを解決
+    if (resolve_address(host, port, af_hint, servaddr, servaddr_len) != 0)
+    {
+        fprintf(stderr, "Failed to resolve address: %s\n", host);
+        return INVALID_SOCKET;
+    }
+
+    family = servaddr->ss_family;
 
     // UDPソケットの作成
-    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    sockfd = socket(family, SOCK_DGRAM, 0);
     if (SOCKET_ERROR_CHECK(sockfd))
     {
         PRINT_SOCKET_ERROR("socket creation failed");
@@ -117,13 +135,26 @@ static SOCKET init_socket(const char *ip, uint16_t port, struct sockaddr_in *ser
 #endif
 #endif
 
-    // サーバーアドレスの設定
-    memset(servaddr, 0, sizeof(*servaddr));
-    servaddr->sin_family = AF_INET;
-    servaddr->sin_port = htons(port);
-    if (inet_pton(AF_INET, ip, &servaddr->sin_addr) <= 0)
+    // 接続済みUDPソケットにして送信元を検証
+    if (connect(sockfd, (const struct sockaddr *)servaddr, *servaddr_len) < 0)
     {
-        fprintf(stderr, "Invalid address: %s\n", ip);
+        PRINT_SOCKET_ERROR("connect to remote STAMP server failed");
+
+        /* 失敗した接続先のアドレス/ポートを追加で表示して診断しやすくする */
+        char addrstr[INET6_ADDRSTRLEN] = {0};
+        uint16_t port_tmp = sockaddr_get_port(servaddr);
+
+        if (sockaddr_to_string(servaddr, addrstr, sizeof(addrstr)) != NULL)
+        {
+            fprintf(stderr,
+                    "Failed to connect to STAMP server at %s:%u (remote host or network may be unreachable).\n",
+                    addrstr, (unsigned int)port_tmp);
+        }
+        else
+        {
+            fprintf(stderr,
+                    "Failed to connect to remote STAMP server (remote host or network may be unreachable).\n");
+        }
         CLOSE_SOCKET(sockfd);
         return INVALID_SOCKET;
     }
@@ -135,11 +166,10 @@ static SOCKET init_socket(const char *ip, uint16_t port, struct sockaddr_in *ser
  * STAMPパケットの送信 (RFC 8762 Section 4.2.1)
  * @param sockfd ソケットディスクリプタ
  * @param seq シーケンス番号
- * @param servaddr サーバーアドレス
  * @param tx_packet 送信パケットのポインタ
  * @return 成功時0、エラー時-1
  */
-static int send_stamp_packet(SOCKET sockfd, uint32_t seq, const struct sockaddr_in *servaddr,
+static int send_stamp_packet(SOCKET sockfd, uint32_t seq,
                              struct stamp_sender_packet *tx_packet)
 {
     uint32_t t1_sec, t1_frac;
@@ -158,10 +188,9 @@ static int send_stamp_packet(SOCKET sockfd, uint32_t seq, const struct sockaddr_
     tx_packet->timestamp_frac = t1_frac;
 
     // パケット送信
-    if (sendto(sockfd, (const char *)tx_packet, sizeof(*tx_packet), 0,
-               (const struct sockaddr *)servaddr, sizeof(*servaddr)) < 0)
+    if (send(sockfd, (const char *)tx_packet, (int)sizeof(*tx_packet), 0) < 0)
     {
-        PRINT_SOCKET_ERROR("sendto failed");
+        PRINT_SOCKET_ERROR("send failed");
         return -1;
     }
 
@@ -181,7 +210,7 @@ static int send_stamp_packet(SOCKET sockfd, uint32_t seq, const struct sockaddr_
  * @return 受信バイト数、エラー時-1
  */
 static int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len,
-                               struct sockaddr_in *servaddr, socklen_t *len,
+                               struct sockaddr_storage *servaddr, socklen_t *len,
                                uint32_t *t4_sec, uint32_t *t4_frac)
 {
     int n;
@@ -288,19 +317,18 @@ static int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len
  * STAMPパケットの受信と処理 (RFC 8762 Section 4.2)
  * @param sockfd ソケットディスクリプタ
  * @param tx_packet 送信パケット
- * @param servaddr サーバーアドレス
  * @return 成功時0、エラー時-1
  */
-static int receive_and_process_packet(SOCKET sockfd, const struct stamp_sender_packet *tx_packet,
-                                      struct sockaddr_in *servaddr)
+static int receive_and_process_packet(SOCKET sockfd, const struct stamp_sender_packet *tx_packet)
 {
     struct stamp_reflector_packet rx_packet;
-    socklen_t len = sizeof(*servaddr);
+    struct sockaddr_storage recvaddr;
+    socklen_t len = sizeof(recvaddr);
     uint32_t t4_sec = 0, t4_frac = 0;
     uint8_t buffer[STAMP_MAX_PACKET_SIZE];
 
     // パケット受信（カーネルタイムスタンプ付き）
-    int n = recv_with_timestamp(sockfd, buffer, sizeof(buffer), servaddr, &len, &t4_sec, &t4_frac);
+    int n = recv_with_timestamp(sockfd, buffer, sizeof(buffer), &recvaddr, &len, &t4_sec, &t4_frac);
     if (n < 0)
     {
 #ifdef _WIN32
@@ -347,7 +375,9 @@ static int receive_and_process_packet(SOCKET sockfd, const struct stamp_sender_p
     // ただし、クロックオフセットがある場合 T2, T3 の順序が逆転することがある
     if (t1 > t4)
     {
-        fprintf(stderr, "Warning: T1 > T4 detected (%.9f > %.9f). Severe clock skew or timestamp error.\n", t1, t4);
+        fprintf(stderr, "Warning: T1 > T4 detected. Severe clock skew or timestamp error.\n");
+        fprintf(stderr, "  T1=%.9f, T2=%.9f, T3=%.9f, T4=%.9f\n", t1, t2, t3, t4);
+        fprintf(stderr, "  Difference: %.6f ms\n", (t1 - t4) * 1000.0);
         g_negative_delay_seen = true;
     }
 
@@ -385,10 +415,12 @@ static int receive_and_process_packet(SOCKET sockfd, const struct stamp_sender_p
 int main(int argc, char *argv[])
 {
     SOCKET sockfd;
-    struct sockaddr_in servaddr;
+    struct sockaddr_storage servaddr;
+    socklen_t servaddr_len;
     struct stamp_sender_packet tx_packet;
     uint32_t seq = 0;
     uint16_t port = PORT;
+    int af_hint = AF_UNSPEC; // 自動検出（デフォルト）
 
 #ifdef _WIN32
     // Windows: ソケット初期化
@@ -406,23 +438,51 @@ int main(int argc, char *argv[])
     signal(SIGINT, stamp_signal_handler);
 #endif
 
-    // コマンドライン引数からIPアドレスを取得（なければデフォルト使用）
-    if (argc > 3)
+    // getopt()によるオプションパース
+    int opt;
+    while ((opt = getopt(argc, argv, "46")) != -1)
+    {
+        switch (opt)
+        {
+        case '4':
+            af_hint = AF_INET;
+            break;
+        case '6':
+            af_hint = AF_INET6;
+            break;
+        default:
+            print_usage(argc > 0 ? argv[0] : "sender");
+#ifdef _WIN32
+            WSACleanup();
+#endif
+            return 1;
+        }
+    }
+
+    // 残りの引数の数を確認
+    int remaining_args = argc - optind;
+    if (remaining_args > 2)
     {
         print_usage(argc > 0 ? argv[0] : "sender");
+#ifdef _WIN32
+        WSACleanup();
+#endif
         return 1;
     }
 
-    const char *ip = (argc > 1) ? argv[1] : SERVER_IP;
-    if (argc > 2 && parse_port(argv[2], &port) != 0)
+    const char *host = (remaining_args > 0) ? argv[optind] : SERVER_IP;
+    if (remaining_args > 1 && parse_port(argv[optind + 1], &port) != 0)
     {
-        fprintf(stderr, "Invalid port: %s\n", argv[2]);
+        fprintf(stderr, "Invalid port: %s\n", argv[optind + 1]);
         print_usage(argc > 0 ? argv[0] : "sender");
+#ifdef _WIN32
+        WSACleanup();
+#endif
         return 1;
     }
 
     // ソケットの初期化
-    sockfd = init_socket(ip, port, &servaddr);
+    sockfd = init_socket(host, port, &servaddr, &servaddr_len, af_hint);
     if (SOCKET_ERROR_CHECK(sockfd))
     {
 #ifdef _WIN32
@@ -432,7 +492,25 @@ int main(int argc, char *argv[])
     }
 
     // 測定開始メッセージの表示
-    printf("STAMP Sender targeting %s:%u\n", ip, port);
+    {
+        char addr_str[INET6_ADDRSTRLEN];
+        const char *family_str = (servaddr.ss_family == AF_INET6) ? "IPv6" : "IPv4";
+
+        if (sockaddr_to_string(&servaddr, addr_str, sizeof(addr_str)) == NULL)
+        {
+            fprintf(stderr, "Warning: Failed to convert address to string\n");
+            snprintf(addr_str, sizeof(addr_str), "<unknown>");
+        }
+
+        if (servaddr.ss_family == AF_INET6)
+        {
+            printf("STAMP Sender targeting [%s]:%u (%s)\n", addr_str, port, family_str);
+        }
+        else
+        {
+            printf("STAMP Sender targeting %s:%u (%s)\n", addr_str, port, family_str);
+        }
+    }
     printf("Press Ctrl+C to stop and show statistics\n");
     printf("Seq\tFwd(ms)\t\tBwd(ms)\t\tRTT(ms)\tOffset(ms)\t[adj_Fwd]\t[adj_Bwd]\n");
     printf("--------------------------------------------------------------------------------------------\n");
@@ -440,9 +518,9 @@ int main(int argc, char *argv[])
     // メインループ
     while (g_running)
     {
-        if (send_stamp_packet(sockfd, seq, &servaddr, &tx_packet) == 0)
+        if (send_stamp_packet(sockfd, seq, &tx_packet) == 0)
         {
-            receive_and_process_packet(sockfd, &tx_packet, &servaddr);
+            receive_and_process_packet(sockfd, &tx_packet);
         }
         seq++;
 
@@ -450,7 +528,7 @@ int main(int argc, char *argv[])
         // Ctrl+Cで中断できるよう、100ms間隔でスリープしてg_runningをチェック
         {
             int total_ms = SEND_INTERVAL_SEC * 1000;
-            int sleep_interval_ms = 100;
+            int sleep_interval_ms = SLEEP_CHECK_INTERVAL_MS;
             for (int elapsed = 0; elapsed < total_ms && g_running; elapsed += sleep_interval_ms)
             {
                 int remaining = total_ms - elapsed;
