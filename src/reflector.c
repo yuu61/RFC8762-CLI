@@ -18,6 +18,139 @@ struct reflector_stats
 
 static struct reflector_stats g_stats = {0, 0};
 
+#ifndef _WIN32
+// ファイアウォール管理用のグローバル変数
+static uint16_t g_firewall_port = 0;
+static int g_firewall_family = AF_UNSPEC;
+static bool g_firewall_rule_added = false;
+
+/**
+ * ファイアウォールルールを追加
+ * @param port 開放するポート番号
+ * @param family アドレスファミリ (AF_INET, AF_INET6, AF_UNSPEC)
+ * @return 成功時0、エラー時-1
+ */
+static int add_firewall_rule(uint16_t port, int family)
+{
+	char cmd[256];
+	int ipv4_success = 0;
+	int ipv6_success = 0;
+
+	// root権限チェック
+	if (geteuid() != 0)
+	{
+		return -1;
+	}
+
+	// IPv4 ルール追加
+	if (family == AF_INET || family == AF_UNSPEC)
+	{
+		// 既存ルールをチェックし、なければ追加（末尾に追加）
+		snprintf(cmd, sizeof(cmd),
+				 "iptables -C INPUT -p udp --dport %u -j ACCEPT 2>/dev/null || "
+				 "iptables -A INPUT -p udp --dport %u -j ACCEPT",
+				 port, port);
+		if (system(cmd) == 0)
+		{
+			ipv4_success = 1;
+			printf("IPv4 firewall rule added for UDP port %u\n", port);
+		}
+		else
+		{
+			fprintf(stderr, "Warning: Failed to add IPv4 firewall rule for port %u\n", port);
+		}
+	}
+
+	// IPv6 ルール追加
+	if (family == AF_INET6 || family == AF_UNSPEC)
+	{
+		snprintf(cmd, sizeof(cmd),
+				 "ip6tables -C INPUT -p udp --dport %u -j ACCEPT 2>/dev/null || "
+				 "ip6tables -A INPUT -p udp --dport %u -j ACCEPT",
+				 port, port);
+		if (system(cmd) == 0)
+		{
+			ipv6_success = 1;
+			printf("IPv6 firewall rule added for UDP port %u\n", port);
+		}
+		else
+		{
+			fprintf(stderr, "Warning: Failed to add IPv6 firewall rule for port %u\n", port);
+		}
+	}
+
+	// 少なくとも1つ成功した場合は成功とみなす
+	if (ipv4_success || ipv6_success)
+	{
+		g_firewall_port = port;
+		g_firewall_family = family;
+		g_firewall_rule_added = true;
+		return 0;
+	}
+
+	return -1;
+}
+
+/**
+ * ファイアウォールルールを削除
+ */
+static void remove_firewall_rule(void)
+{
+	char cmd[256];
+	int ipv4_removed = 0;
+	int ipv6_removed = 0;
+
+	if (!g_firewall_rule_added || g_firewall_port == 0)
+	{
+		return;
+	}
+
+	// IPv4 ルール削除
+	if (g_firewall_family == AF_INET || g_firewall_family == AF_UNSPEC)
+	{
+		snprintf(cmd, sizeof(cmd),
+				 "iptables -D INPUT -p udp --dport %u -j ACCEPT 2>/dev/null",
+				 g_firewall_port);
+		if (system(cmd) == 0)
+		{
+			ipv4_removed = 1;
+			printf("IPv4 firewall rule removed for UDP port %u\n", g_firewall_port);
+		}
+		else
+		{
+			fprintf(stderr, "Warning: Failed to remove IPv4 firewall rule for port %u\n", g_firewall_port);
+		}
+	}
+
+	// IPv6 ルール削除
+	if (g_firewall_family == AF_INET6 || g_firewall_family == AF_UNSPEC)
+	{
+		snprintf(cmd, sizeof(cmd),
+				 "ip6tables -D INPUT -p udp --dport %u -j ACCEPT 2>/dev/null",
+				 g_firewall_port);
+		if (system(cmd) == 0)
+		{
+			ipv6_removed = 1;
+			printf("IPv6 firewall rule removed for UDP port %u\n", g_firewall_port);
+		}
+		else
+		{
+			fprintf(stderr, "Warning: Failed to remove IPv6 firewall rule for port %u\n", g_firewall_port);
+		}
+	}
+
+	if (!ipv4_removed && !ipv6_removed)
+	{
+		fprintf(stderr, "Warning: No firewall rules were successfully removed\n");
+	}
+
+	// グローバル状態をクリア
+	g_firewall_rule_added = false;
+	g_firewall_port = 0;
+	g_firewall_family = AF_UNSPEC;
+}
+#endif
+
 /**
  * 統計情報の表示
  */
@@ -533,6 +666,17 @@ int main(int argc, char *argv[])
 	SetConsoleCtrlHandler(stamp_signal_handler, TRUE);
 #else
 	signal(SIGINT, stamp_signal_handler);
+	signal(SIGTERM, stamp_signal_handler);
+
+	// ファイアウォールルールを追加（root権限がある場合）
+	if (geteuid() == 0)
+	{
+		if (add_firewall_rule(port, socket_family) == 0)
+		{
+			// プログラム終了時に確実にルールを削除
+			atexit(remove_firewall_rule);
+		}
+	}
 #endif
 
 	// 開始メッセージの表示
@@ -621,6 +765,10 @@ int main(int argc, char *argv[])
 	print_statistics();
 
 	// クリーンアップ
+#ifndef _WIN32
+	// ファイアウォールルールを削除
+	remove_firewall_rule();
+#endif
 	CLOSE_SOCKET(sockfd);
 #ifdef _WIN32
 	WSACleanup();
