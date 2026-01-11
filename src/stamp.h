@@ -236,8 +236,8 @@ static inline int stamp_getopt(int argc, char *const argv[], const char *optstri
     size_t arg_len = strlen(arg);
     if (arg_len < 2 || arg[0] != '-')
         return -1;
-    // 「--」は終端マーカー
-    if (arg_len >= 2 && arg[1] == '-' && arg[2] == '\0')
+    // 「--」は終端マーカー（arg_len == 2 && arg[1] == '-'で検出）
+    if (arg_len == 2 && arg[1] == '-')
     {
         stamp_optind++;
         return -1;
@@ -256,7 +256,7 @@ static inline int stamp_getopt(int argc, char *const argv[], const char *optstri
     if (p[1] == ':')
     {
         // オプションが引数を要求する場合
-        // arg[2]の境界チェックは既にarg_len >= 2で保証されている
+        // arg[2]へのアクセスは、以下の条件 arg_len > 2 により境界チェックされている
         if (arg_len > 2 && arg[2] != '\0')
         {
             stamp_optarg = (char *)&arg[2];
@@ -274,7 +274,8 @@ static inline int stamp_getopt(int argc, char *const argv[], const char *optstri
     else
     {
         // オプションが引数を要求しない場合: 余分な文字を拒否
-        if (arg[2] != '\0')
+        // arg[2]へのアクセスは、以下の条件 arg_len > 2 により境界チェックされている
+        if (arg_len > 2 && arg[2] != '\0')
         {
             stamp_optopt = opt;
             return '?';

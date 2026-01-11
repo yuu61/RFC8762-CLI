@@ -229,7 +229,8 @@ static SOCKET init_reflector_socket(uint16_t port, int af_hint, int *out_family)
 		if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR,
 					   (const char *)&opt, sizeof(opt)) < 0)
 		{
-			PRINT_SOCKET_ERROR("setsockopt SO_REUSEADDR failed; continuing without address reuse (port may not be immediately reusable after restart)");
+			PRINT_SOCKET_ERROR("setsockopt SO_REUSEADDR failed");
+			fprintf(stderr, "Continuing without address reuse (port may not be immediately reusable after restart)\n");
 		}
 
 		// IPv6デュアルスタック設定
@@ -411,9 +412,22 @@ static int reflect_packet(SOCKET sockfd, uint8_t *buffer, int send_len,
 	return 0;
 }
 
+/**
+ * STAMPパケットの受信（タイムスタンプ付き）
+ * @param sockfd ソケットディスクリプタ
+ * @param buffer 受信バッファ
+ * @param buffer_len バッファサイズ
+ * @param cliaddr クライアントアドレス構造体
+ * @param len アドレス構造体のサイズ
+ * @param ttl TTL/Hop Limit値
+ * @param t2_sec 受信タイムスタンプ秒部分
+ * @param t2_frac 受信タイムスタンプ小数部分
+ * @param socket_family ソケットのアドレスファミリ（将来のAF_INET/AF_INET6固有処理用に予約、現在は未使用）
+ * @return 受信バイト数、エラー時-1
+ */
 static int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
 							 struct sockaddr_storage *cliaddr, socklen_t *len, uint8_t *ttl,
-							 uint32_t *t2_sec, uint32_t *t2_frac, int socket_family /* reserved for future AF_INET/AF_INET6-specific handling; may be unused in current implementation */)
+							 uint32_t *t2_sec, uint32_t *t2_frac, int socket_family)
 {
 #ifdef _WIN32
 	if (ttl)

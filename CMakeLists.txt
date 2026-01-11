@@ -18,6 +18,12 @@ option(NATIVE_BUILD "Optimize for build machine CPU (-march=native)" ON)
 option(PORTABLE_BUILD "Build portable binary for distribution" OFF)
 option(ENABLE_LTO "Enable Link-Time Optimization (increases build time and memory usage)" ON)
 
+# NATIVE_BUILDとPORTABLE_BUILDの相互排他性を確認
+if(NATIVE_BUILD AND PORTABLE_BUILD)
+    message(WARNING "Both NATIVE_BUILD and PORTABLE_BUILD are ON. PORTABLE_BUILD takes precedence.")
+    set(NATIVE_BUILD OFF)
+endif()
+
 # Architecture detection and optimization flags
 set(ARCH_FLAGS "")
 if(NOT MSVC)
