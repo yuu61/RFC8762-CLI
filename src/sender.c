@@ -359,7 +359,9 @@ static int receive_and_process_packet(SOCKET sockfd, const struct stamp_sender_p
     // ただし、クロックオフセットがある場合 T2, T3 の順序が逆転することがある
     if (t1 > t4)
     {
-        fprintf(stderr, "Warning: T1 > T4 detected (%.9f > %.9f). Severe clock skew or timestamp error.\n", t1, t4);
+        fprintf(stderr, "Warning: T1 > T4 detected. Severe clock skew or timestamp error.\n");
+        fprintf(stderr, "  T1=%.9f, T2=%.9f, T3=%.9f, T4=%.9f\n", t1, t2, t3, t4);
+        fprintf(stderr, "  Difference: %.6f ms\n", (t1 - t4) * 1000.0);
         g_negative_delay_seen = true;
     }
 

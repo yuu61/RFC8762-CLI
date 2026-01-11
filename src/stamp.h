@@ -151,6 +151,7 @@ static inline int get_ntp_timestamp(uint32_t *sec, uint32_t *frac)
 
     *sec = htonl((uint32_t)(unix_time + NTP_OFFSET));
     // 整数演算で精度を保つ: frac_100ns * 2^32 / 10^7（厳密計算）
+    // 丸め誤差を最小化するため (WINDOWS_TICKS_PER_SEC / 2) を加算
     uint64_t frac_val = ((frac_100ns << 32) + (WINDOWS_TICKS_PER_SEC / 2)) / WINDOWS_TICKS_PER_SEC;
     *frac = htonl((uint32_t)frac_val);
 #else
@@ -164,6 +165,7 @@ static inline int get_ntp_timestamp(uint32_t *sec, uint32_t *frac)
     *sec = htonl((uint32_t)(ts.tv_sec + NTP_OFFSET));
     // 整数演算で精度を保つ: tv_nsec * 2^32 / 10^9
     // = tv_nsec * 4294967296 / 1000000000 ≈ tv_nsec * 4.294967296
+    // 丸め誤差を最小化するため 500000000ULL (0.5 * 10^9) を加算
     uint64_t frac_val = ((uint64_t)ts.tv_nsec * 4294967296ULL + 500000000ULL) / 1000000000ULL;
     *frac = htonl((uint32_t)frac_val);
 #else
@@ -230,9 +232,12 @@ static inline int stamp_getopt(int argc, char *const argv[], const char *optstri
         return -1;
 
     const char *arg = argv[stamp_optind];
-    if (arg[0] != '-' || arg[1] == '\0')
+    // 境界チェック: 最低2文字必要（'-' + オプション文字）
+    size_t arg_len = strlen(arg);
+    if (arg_len < 2 || arg[0] != '-')
         return -1;
-    if (arg[1] == '-' && arg[2] == '\0')
+    // 「--」は終端マーカー
+    if (arg_len >= 2 && arg[1] == '-' && arg[2] == '\0')
     {
         stamp_optind++;
         return -1;
@@ -250,11 +255,12 @@ static inline int stamp_getopt(int argc, char *const argv[], const char *optstri
     stamp_optind++;
     if (p[1] == ':')
     {
-        if (arg[2] != '\0')
+        // arg[2]の境界チェックは既にarg_len >= 2で保証されている
+        if (arg_len > 2 && arg[2] != '\0')
         {
             stamp_optarg = (char *)&arg[2];
         }
-        else if (stamp_optind < argc)
+        else if (stamp_optind < argc && argv[stamp_optind] != NULL)
         {
             stamp_optarg = argv[stamp_optind++];
         }

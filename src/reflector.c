@@ -202,11 +202,19 @@ static int reflect_packet(SOCKET sockfd, uint8_t *buffer, int send_len,
 	struct stamp_reflector_packet *packet;
 	uint32_t t3_sec, t3_frac;
 
-	// バッファサイズの検証
+	// バッファサイズの厳密な検証
 	if (send_len <= 0 || send_len > STAMP_MAX_PACKET_SIZE)
 	{
-		fprintf(stderr, "Invalid packet size: %d\n", send_len);
+		fprintf(stderr, "Invalid packet size: %d (valid range: 1-%d)\n", 
+				send_len, STAMP_MAX_PACKET_SIZE);
 		return -1;
+	}
+	// 最小パケットサイズの確認（パディング後のサイズで判定）
+	if (send_len < STAMP_BASE_PACKET_SIZE)
+	{
+		// パディングは呼び出し元で実施済みだが、念のため確認
+		fprintf(stderr, "Warning: packet size %d < minimum %d\n", 
+				send_len, STAMP_BASE_PACKET_SIZE);
 	}
 
 	memset(&sender, 0, sizeof(sender));
