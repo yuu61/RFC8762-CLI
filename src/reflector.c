@@ -89,12 +89,14 @@ static SOCKET init_reflector_socket(uint16_t port, int af_hint, int *out_family)
 		}
 
 		// SO_REUSEADDRオプションの設定
+		/* SO_REUSEADDRが設定できなくても致命的ではない。
+		 * リスタート時に同じポートをすぐに再利用できない可能性があるだけなので、
+		 * 警告を出して処理を継続する。
+		 */
 		if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR,
 					   (const char *)&opt, sizeof(opt)) < 0)
 		{
-			PRINT_SOCKET_ERROR("setsockopt SO_REUSEADDR failed");
-			CLOSE_SOCKET(sockfd);
-			return INVALID_SOCKET;
+			PRINT_SOCKET_ERROR("setsockopt SO_REUSEADDR failed; continuing without address reuse (port may not be immediately reusable after restart)");
 		}
 
 		// IPv6デュアルスタック設定
@@ -278,7 +280,7 @@ static int reflect_packet(SOCKET sockfd, uint8_t *buffer, int send_len,
 
 static int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
 							 struct sockaddr_storage *cliaddr, socklen_t *len, uint8_t *ttl,
-							 uint32_t *t2_sec, uint32_t *t2_frac, int socket_family)
+							 uint32_t *t2_sec, uint32_t *t2_frac, int socket_family /* reserved for future AF_INET/AF_INET6-specific handling; may be unused in current implementation */)
 {
 #ifdef _WIN32
 	if (ttl)
@@ -593,7 +595,11 @@ int main(int argc, char *argv[])
 			const struct stamp_reflector_packet *packet =
 				(const struct stamp_reflector_packet *)buffer;
 			char addr_str[INET6_ADDRSTRLEN];
-			sockaddr_to_string(&cliaddr, addr_str, sizeof(addr_str));
+
+			if (sockaddr_to_string(&cliaddr, addr_str, sizeof(addr_str)) == NULL)
+			{
+				strcpy(addr_str, "<unknown>");
+			}
 			uint16_t cli_port = sockaddr_get_port(&cliaddr);
 
 			if (cliaddr.ss_family == AF_INET6)

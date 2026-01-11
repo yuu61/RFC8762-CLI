@@ -138,7 +138,41 @@ static SOCKET init_socket(const char *host, uint16_t port,
     // 接続済みUDPソケットにして送信元を検証
     if (connect(sockfd, (const struct sockaddr *)servaddr, *servaddr_len) < 0)
     {
-        PRINT_SOCKET_ERROR("connect failed");
+        PRINT_SOCKET_ERROR("connect to remote STAMP server failed");
+
+#ifndef _WIN32
+        /* 失敗した接続先のアドレス/ポートを追加で表示して診断しやすくする */
+        char addrstr[INET6_ADDRSTRLEN] = {0};
+        uint16_t port_tmp = 0;
+        const void *addrptr = NULL;
+
+        if (servaddr->ss_family == AF_INET)
+        {
+            const struct sockaddr_in *sin = (const struct sockaddr_in *)servaddr;
+            addrptr = &sin->sin_addr;
+            port_tmp = ntohs(sin->sin_port);
+        }
+#ifdef AF_INET6
+        else if (servaddr->ss_family == AF_INET6)
+        {
+            const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)servaddr;
+            addrptr = &sin6->sin6_addr;
+            port_tmp = ntohs(sin6->sin6_port);
+        }
+#endif
+
+        if (addrptr != NULL &&
+            inet_ntop(servaddr->ss_family, addrptr, addrstr, sizeof(addrstr)) != NULL)
+        {
+            fprintf(stderr,
+                    "Failed to connect to STAMP server at %s:%u (remote host or network may be unreachable).\n",
+                    addrstr, (unsigned int)port_tmp);
+        }
+#else
+        /* Windows環境では、追加の詳細ヒントのみを表示 */
+        fprintf(stderr,
+                "Failed to connect to remote STAMP server (remote host or network may be unreachable).\n");
+#endif
         CLOSE_SOCKET(sockfd);
         return INVALID_SOCKET;
     }
@@ -479,7 +513,12 @@ int main(int argc, char *argv[])
     {
         char addr_str[INET6_ADDRSTRLEN];
         const char *family_str = (servaddr.ss_family == AF_INET6) ? "IPv6" : "IPv4";
-        sockaddr_to_string(&servaddr, addr_str, sizeof(addr_str));
+
+        if (sockaddr_to_string(&servaddr, addr_str, sizeof(addr_str)) == NULL)
+        {
+            fprintf(stderr, "Warning: Failed to convert address to string\n");
+            strcpy(addr_str, "<unknown>");
+        }
 
         if (servaddr.ss_family == AF_INET6)
         {

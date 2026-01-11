@@ -16,6 +16,7 @@ set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release")
 # CPU optimization option
 option(NATIVE_BUILD "Optimize for build machine CPU (-march=native)" ON)
 option(PORTABLE_BUILD "Build portable binary for distribution" OFF)
+option(ENABLE_LTO "Enable Link-Time Optimization (increases build time and memory usage)" ON)
 
 # Architecture detection and optimization flags
 set(ARCH_FLAGS "")
@@ -38,8 +39,12 @@ if(NOT MSVC)
         # Architecture-specific baseline optimization
         message(STATUS "Building for architecture: ${CMAKE_SYSTEM_PROCESSOR}")
         if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
-            # x86_64: SSE4.2 is widely supported (2008+)
-            set(ARCH_FLAGS "-march=x86-64-v2 -mtune=generic")
+            # x86_64: Use x86-64-v2 when supported; fall back for older GCC versions
+            if(CMAKE_C_COMPILER_ID STREQUAL "GNU" AND CMAKE_C_COMPILER_VERSION VERSION_LESS "11.0")
+                set(ARCH_FLAGS "-march=x86-64 -msse4.2 -mtune=generic")
+            else()
+                set(ARCH_FLAGS "-march=x86-64-v2 -mtune=generic")
+            endif()
         elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
             # ARM64: NEON is always available
             set(ARCH_FLAGS "-march=armv8-a -mtune=generic")
@@ -76,10 +81,13 @@ else()
     # Release build: Maximum optimization
     add_compile_options(
         $<$<CONFIG:Release>:-O3>                  # Maximum optimization level
-        $<$<CONFIG:Release>:-flto>                # Link-time optimization
         $<$<CONFIG:Release>:-funroll-loops>       # Unroll loops
         $<$<CONFIG:Release>:-fomit-frame-pointer> # Omit frame pointer
     )
+    # Link-time optimization (optional, controlled by ENABLE_LTO)
+    if(ENABLE_LTO)
+        add_compile_options($<$<CONFIG:Release>:-flto>)
+    endif()
     # Architecture-specific flags (Release build only for performance)
     # Debug builds use -O0 -g for better debugging experience
     if(ARCH_FLAGS)
@@ -89,8 +97,10 @@ else()
         endforeach()
     endif()
     add_compile_definitions($<$<CONFIG:Release>:NDEBUG>)
-    # GCC/Clang linker flags for LTO
-    add_link_options($<$<CONFIG:Release>:-flto>)
+    # GCC/Clang linker flags for LTO (optional)
+    if(ENABLE_LTO)
+        add_link_options($<$<CONFIG:Release>:-flto>)
+    endif()
 endif()
 
 # Platform-specific settings

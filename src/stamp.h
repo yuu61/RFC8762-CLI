@@ -470,7 +470,9 @@ static inline const char *sockaddr_to_string(const struct sockaddr_storage *addr
 /**
  * ホスト名またはIPアドレス文字列を解決してsockaddr_storageに格納
  * getaddrinfo()を使用してIPv4/IPv6両方に対応
- * AF_UNSPEC指定時にIPv6接続失敗した場合、IPv4へフォールバックを試みる
+ * この関数はgetaddrinfo()が返すアドレスリストの最初のエントリを使用します。
+ * AF_UNSPEC指定時はIPv6が先に返される傾向がありますが、実際の接続は呼び出し元で試行するため、
+ * 接続失敗時のフォールバックロジックは呼び出し元で実装する必要があります。
  * @param host ホスト名またはIPアドレス文字列
  * @param port ポート番号
  * @param af_hint アドレスファミリのヒント (AF_UNSPEC=自動, AF_INET, AF_INET6)
@@ -507,9 +509,10 @@ static inline int resolve_address(const char *host, uint16_t port, int af_hint,
         return -1;
     }
 
-    // getaddrinfo()が返すアドレスリストを順に試行
+    // getaddrinfo()が返すアドレスリストを順に処理
     // AF_UNSPEC指定時: IPv6が先に返されることが多いが、
-    // 接続できない場合は次のアドレス（IPv4）へフォールバック
+    // 実際の接続テストは呼び出し元で実施する必要があります。
+    // 接続失敗時のフォールバックロジックは上位層で実装してください。
     for (rp = result; rp != NULL; rp = rp->ai_next)
     {
         if (rp->ai_family == AF_INET || rp->ai_family == AF_INET6)
