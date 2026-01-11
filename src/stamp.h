@@ -217,6 +217,65 @@ static inline int validate_stamp_packet(const void *packet, int size)
 // 共通ユーティリティ（reflector.c, sender.c で使用）
 // =============================================================================
 
+// getopt() サポート
+#ifdef _WIN32
+// Windows: MSVCにはgetoptがないため、簡易実装を提供
+static char *stamp_optarg = NULL;
+static int stamp_optind = 1;
+static int stamp_optopt = 0;
+
+static inline int stamp_getopt(int argc, char *const argv[], const char *optstring)
+{
+    if (stamp_optind >= argc || argv[stamp_optind] == NULL)
+        return -1;
+
+    const char *arg = argv[stamp_optind];
+    if (arg[0] != '-' || arg[1] == '\0')
+        return -1;
+    if (arg[1] == '-' && arg[2] == '\0')
+    {
+        stamp_optind++;
+        return -1;
+    }
+
+    char opt = arg[1];
+    const char *p = strchr(optstring, opt);
+    if (p == NULL)
+    {
+        stamp_optopt = opt;
+        stamp_optind++;
+        return '?';
+    }
+
+    stamp_optind++;
+    if (p[1] == ':')
+    {
+        if (arg[2] != '\0')
+        {
+            stamp_optarg = (char *)&arg[2];
+        }
+        else if (stamp_optind < argc)
+        {
+            stamp_optarg = argv[stamp_optind++];
+        }
+        else
+        {
+            stamp_optopt = opt;
+            return '?';
+        }
+    }
+    return opt;
+}
+
+#define getopt stamp_getopt
+#define optarg stamp_optarg
+#define optind stamp_optind
+#define optopt stamp_optopt
+#else
+// POSIX: 標準のgetoptを使用
+#include <getopt.h>
+#endif
+
 // エラーメッセージ出力用マクロ
 #define PRINT_SOCKET_ERROR(msg) fprintf(stderr, "%s: error %d\n", msg, SOCKET_ERRNO)
 
@@ -371,6 +430,7 @@ static inline uint16_t sockaddr_get_port(const struct sockaddr_storage *addr)
 
 /**
  * sockaddr_storageをアドレス文字列に変換
+ * getnameinfo()を使用してIPv4/IPv6両対応
  * @param addr sockaddr_storage構造体へのポインタ
  * @param buf 出力バッファ
  * @param buflen バッファサイズ（INET6_ADDRSTRLEN以上推奨）
@@ -382,17 +442,13 @@ static inline const char *sockaddr_to_string(const struct sockaddr_storage *addr
     if (!addr || !buf || buflen == 0)
         return NULL;
 
-    if (addr->ss_family == AF_INET)
+    socklen_t addrlen = get_sockaddr_len(addr->ss_family);
+    if (getnameinfo((const struct sockaddr *)addr, addrlen,
+                    buf, (socklen_t)buflen, NULL, 0, NI_NUMERICHOST) != 0)
     {
-        const struct sockaddr_in *sin = (const struct sockaddr_in *)addr;
-        return inet_ntop(AF_INET, &sin->sin_addr, buf, (socklen_t)buflen);
+        return NULL;
     }
-    else if (addr->ss_family == AF_INET6)
-    {
-        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)addr;
-        return inet_ntop(AF_INET6, &sin6->sin6_addr, buf, (socklen_t)buflen);
-    }
-    return NULL;
+    return buf;
 }
 
 /**

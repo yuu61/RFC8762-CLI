@@ -401,7 +401,6 @@ int main(int argc, char *argv[])
     uint32_t seq = 0;
     uint16_t port = PORT;
     int af_hint = AF_UNSPEC; // 自動検出（デフォルト）
-    int arg_index = 1;
 
 #ifdef _WIN32
     // Windows: ソケット初期化
@@ -419,30 +418,29 @@ int main(int argc, char *argv[])
     signal(SIGINT, stamp_signal_handler);
 #endif
 
-    // -4/-6 オプションのパース
-    while (arg_index < argc && argv[arg_index][0] == '-')
+    // getopt()によるオプションパース
+    int opt;
+    while ((opt = getopt(argc, argv, "46")) != -1)
     {
-        if (strcmp(argv[arg_index], "-4") == 0)
+        switch (opt)
         {
+        case '4':
             af_hint = AF_INET;
-        }
-        else if (strcmp(argv[arg_index], "-6") == 0)
-        {
+            break;
+        case '6':
             af_hint = AF_INET6;
-        }
-        else
-        {
+            break;
+        default:
             print_usage(argc > 0 ? argv[0] : "sender");
 #ifdef _WIN32
             WSACleanup();
 #endif
             return 1;
         }
-        arg_index++;
     }
 
     // 残りの引数の数を確認
-    int remaining_args = argc - arg_index;
+    int remaining_args = argc - optind;
     if (remaining_args > 2)
     {
         print_usage(argc > 0 ? argv[0] : "sender");
@@ -452,10 +450,10 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    const char *host = (remaining_args > 0) ? argv[arg_index] : SERVER_IP;
-    if (remaining_args > 1 && parse_port(argv[arg_index + 1], &port) != 0)
+    const char *host = (remaining_args > 0) ? argv[optind] : SERVER_IP;
+    if (remaining_args > 1 && parse_port(argv[optind + 1], &port) != 0)
     {
-        fprintf(stderr, "Invalid port: %s\n", argv[arg_index + 1]);
+        fprintf(stderr, "Invalid port: %s\n", argv[optind + 1]);
         print_usage(argc > 0 ? argv[0] : "sender");
 #ifdef _WIN32
         WSACleanup();
