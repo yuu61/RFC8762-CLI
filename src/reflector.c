@@ -555,6 +555,13 @@ int main(int argc, char *argv[])
 			continue;
 		}
 
+		if (n < STAMP_BASE_PACKET_SIZE)
+		{
+			fprintf(stderr,
+					"Warning: undersized STAMP packet received (%d bytes); padding to %d bytes.\n",
+					n, STAMP_BASE_PACKET_SIZE);
+		}
+
 		// パケットサイズが小さい場合はベースサイズに拡張
 		send_len = n;
 		if (send_len < STAMP_BASE_PACKET_SIZE)

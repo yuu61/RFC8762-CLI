@@ -135,6 +135,14 @@ static SOCKET init_socket(const char *host, uint16_t port,
 #endif
 #endif
 
+    // 接続済みUDPソケットにして送信元を検証
+    if (connect(sockfd, (const struct sockaddr *)servaddr, *servaddr_len) < 0)
+    {
+        PRINT_SOCKET_ERROR("connect failed");
+        CLOSE_SOCKET(sockfd);
+        return INVALID_SOCKET;
+    }
+
     return sockfd;
 }
 
@@ -142,13 +150,10 @@ static SOCKET init_socket(const char *host, uint16_t port,
  * STAMPパケットの送信 (RFC 8762 Section 4.2.1)
  * @param sockfd ソケットディスクリプタ
  * @param seq シーケンス番号
- * @param servaddr サーバーアドレス
- * @param servaddr_len サーバーアドレス構造体のサイズ
  * @param tx_packet 送信パケットのポインタ
  * @return 成功時0、エラー時-1
  */
 static int send_stamp_packet(SOCKET sockfd, uint32_t seq,
-                             const struct sockaddr_storage *servaddr, socklen_t servaddr_len,
                              struct stamp_sender_packet *tx_packet)
 {
     uint32_t t1_sec, t1_frac;
@@ -167,10 +172,9 @@ static int send_stamp_packet(SOCKET sockfd, uint32_t seq,
     tx_packet->timestamp_frac = t1_frac;
 
     // パケット送信
-    if (sendto(sockfd, (const char *)tx_packet, sizeof(*tx_packet), 0,
-               (const struct sockaddr *)servaddr, servaddr_len) < 0)
+    if (send(sockfd, (const char *)tx_packet, (int)sizeof(*tx_packet), 0) < 0)
     {
-        PRINT_SOCKET_ERROR("sendto failed");
+        PRINT_SOCKET_ERROR("send failed");
         return -1;
     }
 
@@ -297,20 +301,18 @@ static int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len
  * STAMPパケットの受信と処理 (RFC 8762 Section 4.2)
  * @param sockfd ソケットディスクリプタ
  * @param tx_packet 送信パケット
- * @param servaddr サーバーアドレス
- * @param servaddr_len サーバーアドレス構造体のサイズ
  * @return 成功時0、エラー時-1
  */
-static int receive_and_process_packet(SOCKET sockfd, const struct stamp_sender_packet *tx_packet,
-                                      struct sockaddr_storage *servaddr, socklen_t servaddr_len)
+static int receive_and_process_packet(SOCKET sockfd, const struct stamp_sender_packet *tx_packet)
 {
     struct stamp_reflector_packet rx_packet;
-    socklen_t len = servaddr_len;
+    struct sockaddr_storage recvaddr;
+    socklen_t len = sizeof(recvaddr);
     uint32_t t4_sec = 0, t4_frac = 0;
     uint8_t buffer[STAMP_MAX_PACKET_SIZE];
 
     // パケット受信（カーネルタイムスタンプ付き）
-    int n = recv_with_timestamp(sockfd, buffer, sizeof(buffer), servaddr, &len, &t4_sec, &t4_frac);
+    int n = recv_with_timestamp(sockfd, buffer, sizeof(buffer), &recvaddr, &len, &t4_sec, &t4_frac);
     if (n < 0)
     {
 #ifdef _WIN32
@@ -493,9 +495,9 @@ int main(int argc, char *argv[])
     // メインループ
     while (g_running)
     {
-        if (send_stamp_packet(sockfd, seq, &servaddr, servaddr_len, &tx_packet) == 0)
+        if (send_stamp_packet(sockfd, seq, &tx_packet) == 0)
         {
-            receive_and_process_packet(sockfd, &tx_packet, &servaddr, servaddr_len);
+            receive_and_process_packet(sockfd, &tx_packet);
         }
         seq++;
 
