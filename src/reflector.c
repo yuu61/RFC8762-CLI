@@ -54,6 +54,7 @@ static SOCKET init_reflector_socket(uint16_t port, int af_hint, int *out_family)
 	struct sockaddr_storage servaddr;
 	int opt = 1;
 	int family;
+	int try_ipv4_fallback = (af_hint == AF_UNSPEC);
 
 	// デュアルスタック: IPv6を優先（IPV6_V6ONLY=0でIPv4も受け入れ可能）
 	if (af_hint == AF_UNSPEC)
@@ -65,120 +66,132 @@ static SOCKET init_reflector_socket(uint16_t port, int af_hint, int *out_family)
 		family = af_hint;
 	}
 
-retry_socket:
-	// UDPソケットの作成
-	sockfd = socket(family, SOCK_DGRAM, 0);
-	if (SOCKET_ERROR_CHECK(sockfd))
+	// ソケット作成とバインドをループで試行（IPv6失敗時にIPv4にフォールバック）
+	for (int retry = 0; retry < 2; retry++)
 	{
-		// IPv6が失敗した場合、IPv4にフォールバック
-		if (family == AF_INET6 && af_hint == AF_UNSPEC)
+		// 2回目のループ時はIPv4を試行
+		if (retry == 1)
 		{
 			family = AF_INET;
-			goto retry_socket;
 		}
-		PRINT_SOCKET_ERROR("socket creation failed");
-		return INVALID_SOCKET;
-	}
 
-	// SO_REUSEADDRオプションの設定
-	if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR,
-				   (const char *)&opt, sizeof(opt)) < 0)
-	{
-		PRINT_SOCKET_ERROR("setsockopt SO_REUSEADDR failed");
-		CLOSE_SOCKET(sockfd);
-		return INVALID_SOCKET;
-	}
-
-	// IPv6デュアルスタック設定
-	if (family == AF_INET6 && af_hint == AF_UNSPEC)
-	{
-		int v6only = 0; // デュアルスタック有効化
-#ifdef IPV6_V6ONLY
-		if (setsockopt(sockfd, IPPROTO_IPV6, IPV6_V6ONLY,
-					   (const char *)&v6only, sizeof(v6only)) < 0)
+		// UDPソケットの作成
+		sockfd = socket(family, SOCK_DGRAM, 0);
+		if (SOCKET_ERROR_CHECK(sockfd))
 		{
-			// デュアルスタック非対応の場合は無視
+			if (try_ipv4_fallback && family == AF_INET6)
+			{
+				// IPv6失敗、IPv4にフォールバック
+				continue;
+			}
+			PRINT_SOCKET_ERROR("socket creation failed");
+			return INVALID_SOCKET;
 		}
+
+		// SO_REUSEADDRオプションの設定
+		if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR,
+					   (const char *)&opt, sizeof(opt)) < 0)
+		{
+			PRINT_SOCKET_ERROR("setsockopt SO_REUSEADDR failed");
+			CLOSE_SOCKET(sockfd);
+			return INVALID_SOCKET;
+		}
+
+		// IPv6デュアルスタック設定
+		if (family == AF_INET6 && af_hint == AF_UNSPEC)
+		{
+			int v6only = 0; // デュアルスタック有効化
+#ifdef IPV6_V6ONLY
+			if (setsockopt(sockfd, IPPROTO_IPV6, IPV6_V6ONLY,
+						   (const char *)&v6only, sizeof(v6only)) < 0)
+			{
+				// デュアルスタック非対応の場合は無視
+			}
 #endif
-	}
+		}
 
 #ifdef _WIN32
-	// Windows: ソケットタイムアウトを設定（Ctrl+Cで終了できるようにする）
-	{
-		DWORD timeout_ms = 1000; // 1秒
-		setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO,
-				   (const char *)&timeout_ms, sizeof(timeout_ms));
-	}
+		// Windows: ソケットタイムアウトを設定（Ctrl+Cで終了できるようにする）
+		{
+			DWORD timeout_ms = 1000; // 1秒
+			setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO,
+					   (const char *)&timeout_ms, sizeof(timeout_ms));
+		}
 #endif
 
-	// 受信TTL/Hop Limit取得の有効化 (可能な場合)
-	if (family == AF_INET)
-	{
+		// 受信TTL/Hop Limit取得の有効化 (可能な場合)
+		if (family == AF_INET)
+		{
 #ifdef IP_RECVTTL
-		int recv_ttl = 1;
-		(void)setsockopt(sockfd, IPPROTO_IP, IP_RECVTTL,
-						 (const char *)&recv_ttl, sizeof(recv_ttl));
+			int recv_ttl = 1;
+			(void)setsockopt(sockfd, IPPROTO_IP, IP_RECVTTL,
+							 (const char *)&recv_ttl, sizeof(recv_ttl));
 #endif
-	}
-	else
-	{
+		}
+		else
+		{
 #ifdef IPV6_RECVHOPLIMIT
-		int recv_hop = 1;
-		(void)setsockopt(sockfd, IPPROTO_IPV6, IPV6_RECVHOPLIMIT,
-						 (const char *)&recv_hop, sizeof(recv_hop));
+			int recv_hop = 1;
+			(void)setsockopt(sockfd, IPPROTO_IPV6, IPV6_RECVHOPLIMIT,
+							 (const char *)&recv_hop, sizeof(recv_hop));
 #endif
-	}
+		}
 
 #ifndef _WIN32
-	// カーネルタイムスタンプの有効化 (SO_TIMESTAMPNS: ナノ秒精度)
+		// カーネルタイムスタンプの有効化 (SO_TIMESTAMPNS: ナノ秒精度)
 #ifdef SO_TIMESTAMPNS
-	{
-		int ts_opt = 1;
-		(void)setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMPNS, &ts_opt, sizeof(ts_opt));
-	}
-#elif defined(SO_TIMESTAMP)
-	{
-		int ts_opt = 1;
-		(void)setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMP, &ts_opt, sizeof(ts_opt));
-	}
-#endif
-#endif
-
-	// サーバーアドレスの設定
-	memset(&servaddr, 0, sizeof(servaddr));
-	if (family == AF_INET)
-	{
-		struct sockaddr_in *sin = (struct sockaddr_in *)&servaddr;
-		sin->sin_family = AF_INET;
-		sin->sin_addr.s_addr = INADDR_ANY;
-		sin->sin_port = htons(port);
-	}
-	else
-	{
-		struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&servaddr;
-		sin6->sin6_family = AF_INET6;
-		sin6->sin6_addr = in6addr_any;
-		sin6->sin6_port = htons(port);
-	}
-
-	// バインド
-	if (bind(sockfd, (const struct sockaddr *)&servaddr, get_sockaddr_len(family)) < 0)
-	{
-		// IPv6バインドが失敗した場合、IPv4にフォールバック
-		if (family == AF_INET6 && af_hint == AF_UNSPEC)
 		{
-			CLOSE_SOCKET(sockfd);
-			family = AF_INET;
-			goto retry_socket;
+			int ts_opt = 1;
+			(void)setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMPNS, &ts_opt, sizeof(ts_opt));
 		}
-		PRINT_SOCKET_ERROR("bind failed");
-		CLOSE_SOCKET(sockfd);
-		return INVALID_SOCKET;
+#elif defined(SO_TIMESTAMP)
+		{
+			int ts_opt = 1;
+			(void)setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMP, &ts_opt, sizeof(ts_opt));
+		}
+#endif
+#endif
+
+		// サーバーアドレスの設定
+		memset(&servaddr, 0, sizeof(servaddr));
+		if (family == AF_INET)
+		{
+			struct sockaddr_in *sin = (struct sockaddr_in *)&servaddr;
+			sin->sin_family = AF_INET;
+			sin->sin_addr.s_addr = INADDR_ANY;
+			sin->sin_port = htons(port);
+		}
+		else
+		{
+			struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&servaddr;
+			sin6->sin6_family = AF_INET6;
+			sin6->sin6_addr = in6addr_any;
+			sin6->sin6_port = htons(port);
+		}
+
+		// バインド
+		if (bind(sockfd, (const struct sockaddr *)&servaddr, get_sockaddr_len(family)) < 0)
+		{
+			// IPv6バインドが失敗した場合、IPv4にフォールバック
+			if (try_ipv4_fallback && family == AF_INET6)
+			{
+				CLOSE_SOCKET(sockfd);
+				continue;
+			}
+			PRINT_SOCKET_ERROR("bind failed");
+			CLOSE_SOCKET(sockfd);
+			return INVALID_SOCKET;
+		}
+
+		// 成功
+		if (out_family)
+			*out_family = family;
+		return sockfd;
 	}
 
-	if (out_family)
-		*out_family = family;
-	return sockfd;
+	// ここに到達するのはIPv6/IPv4両方失敗した場合のみ
+	PRINT_SOCKET_ERROR("Failed to create socket for both IPv6 and IPv4");
+	return INVALID_SOCKET;
 }
 
 /**
@@ -563,17 +576,13 @@ int main(int argc, char *argv[])
 			continue;
 		}
 
-		if (n < STAMP_BASE_PACKET_SIZE)
-		{
-			fprintf(stderr,
-					"Warning: undersized STAMP packet received (%d bytes); padding to %d bytes.\n",
-					n, STAMP_BASE_PACKET_SIZE);
-		}
-
 		// パケットサイズが小さい場合はベースサイズに拡張
 		send_len = n;
 		if (send_len < STAMP_BASE_PACKET_SIZE)
 		{
+			fprintf(stderr,
+					"Warning: undersized STAMP packet received (%d bytes); padded to %d bytes.\n",
+					n, STAMP_BASE_PACKET_SIZE);
 			memset(buffer + send_len, 0, STAMP_BASE_PACKET_SIZE - send_len);
 			send_len = STAMP_BASE_PACKET_SIZE;
 		}

@@ -255,6 +255,7 @@ static inline int stamp_getopt(int argc, char *const argv[], const char *optstri
     stamp_optind++;
     if (p[1] == ':')
     {
+        // オプションが引数を要求する場合
         // arg[2]の境界チェックは既にarg_len >= 2で保証されている
         if (arg_len > 2 && arg[2] != '\0')
         {
@@ -265,6 +266,15 @@ static inline int stamp_getopt(int argc, char *const argv[], const char *optstri
             stamp_optarg = argv[stamp_optind++];
         }
         else
+        {
+            stamp_optopt = opt;
+            return '?';
+        }
+    }
+    else
+    {
+        // オプションが引数を要求しない場合: 余分な文字を拒否
+        if (arg[2] != '\0')
         {
             stamp_optopt = opt;
             return '?';
@@ -460,6 +470,7 @@ static inline const char *sockaddr_to_string(const struct sockaddr_storage *addr
 /**
  * ホスト名またはIPアドレス文字列を解決してsockaddr_storageに格納
  * getaddrinfo()を使用してIPv4/IPv6両方に対応
+ * AF_UNSPEC指定時にIPv6接続失敗した場合、IPv4へフォールバックを試みる
  * @param host ホスト名またはIPアドレス文字列
  * @param port ポート番号
  * @param af_hint アドレスファミリのヒント (AF_UNSPEC=自動, AF_INET, AF_INET6)
@@ -484,6 +495,11 @@ static inline int resolve_address(const char *host, uint16_t port, int af_hint,
     hints.ai_family = af_hint;
     hints.ai_socktype = SOCK_DGRAM;
     hints.ai_protocol = IPPROTO_UDP;
+    // AI_ADDRCONFIG: ローカルシステムで利用可能なアドレスファミリのみ返す
+    // IPv6が無効な環境でAAAAレコードを返さない
+#ifdef AI_ADDRCONFIG
+    hints.ai_flags = AI_ADDRCONFIG;
+#endif
 
     ret = getaddrinfo(host, port_str, &hints, &result);
     if (ret != 0)
@@ -491,7 +507,9 @@ static inline int resolve_address(const char *host, uint16_t port, int af_hint,
         return -1;
     }
 
-    // 最初の結果を使用（af_hint=AF_UNSPECの場合、IPv6が優先される傾向がある）
+    // getaddrinfo()が返すアドレスリストを順に試行
+    // AF_UNSPEC指定時: IPv6が先に返されることが多いが、
+    // 接続できない場合は次のアドレス（IPv4）へフォールバック
     for (rp = result; rp != NULL; rp = rp->ai_next)
     {
         if (rp->ai_family == AF_INET || rp->ai_family == AF_INET6)
