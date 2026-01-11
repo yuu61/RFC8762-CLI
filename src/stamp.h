@@ -35,6 +35,7 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netdb.h>
 #include <sys/time.h>
 #include <unistd.h>
 #include <errno.h>
@@ -330,5 +331,119 @@ static inline void timeval_to_ntp(const struct timeval *tv,
     *ntp_frac = htonl((uint32_t)frac_val);
 }
 #endif
+
+// =============================================================================
+// IPv4/IPv6 デュアルスタック対応ユーティリティ
+// =============================================================================
+
+/**
+ * sockaddr_storage構造体のサイズを取得
+ * @param family アドレスファミリ (AF_INET or AF_INET6)
+ * @return 構造体サイズ
+ */
+static inline socklen_t get_sockaddr_len(int family)
+{
+    return (family == AF_INET6) ? (socklen_t)sizeof(struct sockaddr_in6)
+                                : (socklen_t)sizeof(struct sockaddr_in);
+}
+
+/**
+ * sockaddr_storageからポート番号を取得
+ * @param addr sockaddr_storage構造体へのポインタ
+ * @return ポート番号（ホストバイトオーダー）、エラー時0
+ */
+static inline uint16_t sockaddr_get_port(const struct sockaddr_storage *addr)
+{
+    if (!addr)
+        return 0;
+    if (addr->ss_family == AF_INET)
+    {
+        const struct sockaddr_in *sin = (const struct sockaddr_in *)addr;
+        return ntohs(sin->sin_port);
+    }
+    else if (addr->ss_family == AF_INET6)
+    {
+        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)addr;
+        return ntohs(sin6->sin6_port);
+    }
+    return 0;
+}
+
+/**
+ * sockaddr_storageをアドレス文字列に変換
+ * @param addr sockaddr_storage構造体へのポインタ
+ * @param buf 出力バッファ
+ * @param buflen バッファサイズ（INET6_ADDRSTRLEN以上推奨）
+ * @return 成功時buf、エラー時NULL
+ */
+static inline const char *sockaddr_to_string(const struct sockaddr_storage *addr,
+                                             char *buf, size_t buflen)
+{
+    if (!addr || !buf || buflen == 0)
+        return NULL;
+
+    if (addr->ss_family == AF_INET)
+    {
+        const struct sockaddr_in *sin = (const struct sockaddr_in *)addr;
+        return inet_ntop(AF_INET, &sin->sin_addr, buf, (socklen_t)buflen);
+    }
+    else if (addr->ss_family == AF_INET6)
+    {
+        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)addr;
+        return inet_ntop(AF_INET6, &sin6->sin6_addr, buf, (socklen_t)buflen);
+    }
+    return NULL;
+}
+
+/**
+ * ホスト名またはIPアドレス文字列を解決してsockaddr_storageに格納
+ * getaddrinfo()を使用してIPv4/IPv6両方に対応
+ * @param host ホスト名またはIPアドレス文字列
+ * @param port ポート番号
+ * @param af_hint アドレスファミリのヒント (AF_UNSPEC=自動, AF_INET, AF_INET6)
+ * @param out_addr 解決結果を格納するsockaddr_storage構造体
+ * @param out_addrlen 構造体サイズを格納するポインタ
+ * @return 成功時0、エラー時-1
+ */
+static inline int resolve_address(const char *host, uint16_t port, int af_hint,
+                                  struct sockaddr_storage *out_addr,
+                                  socklen_t *out_addrlen)
+{
+    struct addrinfo hints, *result, *rp;
+    char port_str[16];
+    int ret;
+
+    if (!host || !out_addr || !out_addrlen)
+        return -1;
+
+    snprintf(port_str, sizeof(port_str), "%u", port);
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = af_hint;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_protocol = IPPROTO_UDP;
+
+    ret = getaddrinfo(host, port_str, &hints, &result);
+    if (ret != 0)
+    {
+        return -1;
+    }
+
+    // 最初の結果を使用（af_hint=AF_UNSPECの場合、IPv6が優先される傾向がある）
+    for (rp = result; rp != NULL; rp = rp->ai_next)
+    {
+        if (rp->ai_family == AF_INET || rp->ai_family == AF_INET6)
+        {
+            memset(out_addr, 0, sizeof(*out_addr));
+            memcpy(out_addr, rp->ai_addr, rp->ai_addrlen);
+            *out_addrlen = (socklen_t)rp->ai_addrlen;
+            freeaddrinfo(result);
+            return 0;
+        }
+    }
+
+    freeaddrinfo(result);
+    return -1;
+}
 
 #endif

@@ -30,7 +30,11 @@ static void print_statistics(void)
 
 static void print_usage(const char *prog)
 {
-	fprintf(stderr, "Usage: %s [port]\n", prog ? prog : "reflector");
+	fprintf(stderr, "Usage: %s [-4|-6] [port]\n", prog ? prog : "reflector");
+	fprintf(stderr, "Options:\n");
+	fprintf(stderr, "  -4    IPv4 only\n");
+	fprintf(stderr, "  -6    IPv6 only\n");
+	fprintf(stderr, "  (default: dual-stack, accepting both IPv4 and IPv6)\n");
 }
 
 #ifdef _WIN32
@@ -39,18 +43,39 @@ static LPFN_WSARECVMSG g_wsa_recvmsg = NULL;
 
 /**
  * リスニングソケットの初期化 (RFC 8762 Section 3)
+ * @param port リッスンするポート番号
+ * @param af_hint アドレスファミリのヒント (AF_UNSPEC=デュアルスタック, AF_INET, AF_INET6)
+ * @param out_family 実際に使用するアドレスファミリを格納するポインタ
  * @return ソケットディスクリプタ、エラー時INVALID_SOCKET
  */
-static SOCKET init_reflector_socket(uint16_t port)
+static SOCKET init_reflector_socket(uint16_t port, int af_hint, int *out_family)
 {
 	SOCKET sockfd;
-	struct sockaddr_in servaddr;
+	struct sockaddr_storage servaddr;
 	int opt = 1;
+	int family;
 
+	// デュアルスタック: IPv6を優先（IPV6_V6ONLY=0でIPv4も受け入れ可能）
+	if (af_hint == AF_UNSPEC)
+	{
+		family = AF_INET6;
+	}
+	else
+	{
+		family = af_hint;
+	}
+
+retry_socket:
 	// UDPソケットの作成
-	sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+	sockfd = socket(family, SOCK_DGRAM, 0);
 	if (SOCKET_ERROR_CHECK(sockfd))
 	{
+		// IPv6が失敗した場合、IPv4にフォールバック
+		if (family == AF_INET6 && af_hint == AF_UNSPEC)
+		{
+			family = AF_INET;
+			goto retry_socket;
+		}
 		PRINT_SOCKET_ERROR("socket creation failed");
 		return INVALID_SOCKET;
 	}
@@ -64,6 +89,19 @@ static SOCKET init_reflector_socket(uint16_t port)
 		return INVALID_SOCKET;
 	}
 
+	// IPv6デュアルスタック設定
+	if (family == AF_INET6 && af_hint == AF_UNSPEC)
+	{
+		int v6only = 0; // デュアルスタック有効化
+#ifdef IPV6_V6ONLY
+		if (setsockopt(sockfd, IPPROTO_IPV6, IPV6_V6ONLY,
+					   (const char *)&v6only, sizeof(v6only)) < 0)
+		{
+			// デュアルスタック非対応の場合は無視
+		}
+#endif
+	}
+
 #ifdef _WIN32
 	// Windows: ソケットタイムアウトを設定（Ctrl+Cで終了できるようにする）
 	{
@@ -73,14 +111,23 @@ static SOCKET init_reflector_socket(uint16_t port)
 	}
 #endif
 
-	// 受信TTL取得の有効化 (可能な場合)
-#ifdef IP_RECVTTL
+	// 受信TTL/Hop Limit取得の有効化 (可能な場合)
+	if (family == AF_INET)
 	{
+#ifdef IP_RECVTTL
 		int recv_ttl = 1;
 		(void)setsockopt(sockfd, IPPROTO_IP, IP_RECVTTL,
 						 (const char *)&recv_ttl, sizeof(recv_ttl));
-	}
 #endif
+	}
+	else
+	{
+#ifdef IPV6_RECVHOPLIMIT
+		int recv_hop = 1;
+		(void)setsockopt(sockfd, IPPROTO_IPV6, IPV6_RECVHOPLIMIT,
+						 (const char *)&recv_hop, sizeof(recv_hop));
+#endif
+	}
 
 #ifndef _WIN32
 	// カーネルタイムスタンプの有効化 (SO_TIMESTAMPNS: ナノ秒精度)
@@ -99,18 +146,38 @@ static SOCKET init_reflector_socket(uint16_t port)
 
 	// サーバーアドレスの設定
 	memset(&servaddr, 0, sizeof(servaddr));
-	servaddr.sin_family = AF_INET;
-	servaddr.sin_addr.s_addr = INADDR_ANY;
-	servaddr.sin_port = htons(port);
+	if (family == AF_INET)
+	{
+		struct sockaddr_in *sin = (struct sockaddr_in *)&servaddr;
+		sin->sin_family = AF_INET;
+		sin->sin_addr.s_addr = INADDR_ANY;
+		sin->sin_port = htons(port);
+	}
+	else
+	{
+		struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&servaddr;
+		sin6->sin6_family = AF_INET6;
+		sin6->sin6_addr = in6addr_any;
+		sin6->sin6_port = htons(port);
+	}
 
 	// バインド
-	if (bind(sockfd, (const struct sockaddr *)&servaddr, sizeof(servaddr)) < 0)
+	if (bind(sockfd, (const struct sockaddr *)&servaddr, get_sockaddr_len(family)) < 0)
 	{
+		// IPv6バインドが失敗した場合、IPv4にフォールバック
+		if (family == AF_INET6 && af_hint == AF_UNSPEC)
+		{
+			CLOSE_SOCKET(sockfd);
+			family = AF_INET;
+			goto retry_socket;
+		}
 		PRINT_SOCKET_ERROR("bind failed");
 		CLOSE_SOCKET(sockfd);
 		return INVALID_SOCKET;
 	}
 
+	if (out_family)
+		*out_family = family;
 	return sockfd;
 }
 
@@ -118,14 +185,17 @@ static SOCKET init_reflector_socket(uint16_t port)
  * STAMPパケットの反射処理 (RFC 8762 Section 4.3.1)
  * Session-Reflector Stateless Mode
  * @param sockfd ソケットディスクリプタ
- * @param packet 受信パケットのポインタ
+ * @param buffer 受信パケットバッファ
+ * @param send_len 送信パケットサイズ
  * @param cliaddr クライアントアドレス
  * @param len クライアントアドレス構造体のサイズ
- * @param ttl_ipv4 IPv4 TTL値（IPv4の場合）、またはipv6_hop_limit IPv6 Hop Limit値
+ * @param ttl IPv4 TTL値 または IPv6 Hop Limit値
+ * @param t2_sec 受信タイムスタンプ秒部分
+ * @param t2_frac 受信タイムスタンプ小数部分
  * @return 成功時0、エラー時-1
  */
 static int reflect_packet(SOCKET sockfd, uint8_t *buffer, int send_len,
-						  const struct sockaddr_in *cliaddr, socklen_t len, uint8_t ttl,
+						  const struct sockaddr_storage *cliaddr, socklen_t len, uint8_t ttl,
 						  uint32_t t2_sec, uint32_t t2_frac)
 {
 	struct stamp_sender_packet sender;
@@ -186,8 +256,8 @@ static int reflect_packet(SOCKET sockfd, uint8_t *buffer, int send_len,
 }
 
 static int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
-							 struct sockaddr_in *cliaddr, socklen_t *len, uint8_t *ttl,
-							 uint32_t *t2_sec, uint32_t *t2_frac)
+							 struct sockaddr_storage *cliaddr, socklen_t *len, uint8_t *ttl,
+							 uint32_t *t2_sec, uint32_t *t2_frac, int socket_family)
 {
 #ifdef _WIN32
 	if (ttl)
@@ -237,6 +307,7 @@ static int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
 		WSACMSGHDR *cmsg;
 		for (cmsg = WSA_CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = WSA_CMSG_NXTHDR(&msg, cmsg))
 		{
+			// IPv4 TTL
 			if (cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_TTL)
 			{
 				int recv_ttl;
@@ -246,10 +317,23 @@ static int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
 					*ttl = (uint8_t)recv_ttl;
 				}
 			}
+#ifdef IPV6_HOPLIMIT
+			// IPv6 Hop Limit
+			if (cmsg->cmsg_level == IPPROTO_IPV6 && cmsg->cmsg_type == IPV6_HOPLIMIT)
+			{
+				int recv_hop;
+				memcpy(&recv_hop, WSA_CMSG_DATA(cmsg), sizeof(recv_hop));
+				if (recv_hop >= 0 && recv_hop <= 255)
+				{
+					*ttl = (uint8_t)recv_hop;
+				}
+			}
+#endif
 		}
 	}
 
 	return (int)bytes;
+	(void)socket_family; // Windowsでは未使用
 #else
 	struct msghdr msg;
 	struct iovec iov;
@@ -307,6 +391,7 @@ static int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
 			}
 		}
 #endif
+		// IPv4 TTL
 		if (ttl && cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_TTL)
 		{
 			int recv_ttl;
@@ -316,6 +401,18 @@ static int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
 				*ttl = (uint8_t)recv_ttl;
 			}
 		}
+#ifdef IPV6_HOPLIMIT
+		// IPv6 Hop Limit
+		if (ttl && cmsg->cmsg_level == IPPROTO_IPV6 && cmsg->cmsg_type == IPV6_HOPLIMIT)
+		{
+			int recv_hop;
+			memcpy(&recv_hop, CMSG_DATA(cmsg), sizeof(recv_hop));
+			if (recv_hop >= 0 && recv_hop <= 255)
+			{
+				*ttl = (uint8_t)recv_hop;
+			}
+		}
+#endif
 	}
 
 	// カーネルタイムスタンプが取得できなかった場合はフォールバック
@@ -324,6 +421,7 @@ static int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
 		get_ntp_timestamp(t2_sec, t2_frac);
 	}
 
+	(void)socket_family; // 将来の拡張用
 	return n;
 #endif
 }
@@ -331,10 +429,13 @@ static int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
 int main(int argc, char *argv[])
 {
 	SOCKET sockfd;
-	struct sockaddr_in cliaddr;
+	struct sockaddr_storage cliaddr;
 	uint8_t buffer[STAMP_MAX_PACKET_SIZE];
 	socklen_t len;
 	uint16_t port = PORT;
+	int af_hint = AF_UNSPEC; // デュアルスタック（デフォルト）
+	int socket_family = AF_INET;
+	int arg_index = 1;
 
 #ifdef _WIN32
 	// Windows: ソケット初期化
@@ -346,16 +447,46 @@ int main(int argc, char *argv[])
 	}
 #endif
 
-	if (argc > 2)
+	// -4/-6 オプションのパース
+	while (arg_index < argc && argv[arg_index][0] == '-')
+	{
+		if (strcmp(argv[arg_index], "-4") == 0)
+		{
+			af_hint = AF_INET;
+		}
+		else if (strcmp(argv[arg_index], "-6") == 0)
+		{
+			af_hint = AF_INET6;
+		}
+		else
+		{
+			print_usage(argc > 0 ? argv[0] : "reflector");
+#ifdef _WIN32
+			WSACleanup();
+#endif
+			return 1;
+		}
+		arg_index++;
+	}
+
+	// 残りの引数の数を確認
+	int remaining_args = argc - arg_index;
+	if (remaining_args > 1)
 	{
 		print_usage(argc > 0 ? argv[0] : "reflector");
+#ifdef _WIN32
+		WSACleanup();
+#endif
 		return 1;
 	}
 
-	if (argc > 1 && parse_port(argv[1], &port) != 0)
+	if (remaining_args > 0 && parse_port(argv[arg_index], &port) != 0)
 	{
-		fprintf(stderr, "Invalid port: %s\n", argv[1]);
+		fprintf(stderr, "Invalid port: %s\n", argv[arg_index]);
 		print_usage(argc > 0 ? argv[0] : "reflector");
+#ifdef _WIN32
+		WSACleanup();
+#endif
 		return 1;
 	}
 
@@ -367,7 +498,7 @@ int main(int argc, char *argv[])
 #endif
 
 	// ソケットの初期化
-	sockfd = init_reflector_socket(port);
+	sockfd = init_reflector_socket(port, af_hint, &socket_family);
 	if (SOCKET_ERROR_CHECK(sockfd))
 	{
 #ifdef _WIN32
@@ -383,7 +514,19 @@ int main(int argc, char *argv[])
 	signal(SIGINT, stamp_signal_handler);
 #endif
 
-	printf("STAMP Reflector listening on port %u...\n", port);
+	// 開始メッセージの表示
+	{
+		const char *mode_str;
+		if (af_hint == AF_UNSPEC)
+		{
+			mode_str = (socket_family == AF_INET6) ? "dual-stack (IPv4+IPv6)" : "IPv4";
+		}
+		else
+		{
+			mode_str = (socket_family == AF_INET6) ? "IPv6" : "IPv4";
+		}
+		printf("STAMP Reflector listening on port %u (%s)...\n", port, mode_str);
+	}
 	printf("Press Ctrl+C to stop and show statistics\n");
 
 	// メインループ
@@ -395,7 +538,7 @@ int main(int argc, char *argv[])
 		int send_len;
 
 		len = sizeof(cliaddr);
-		n = recv_stamp_packet(sockfd, buffer, sizeof(buffer), &cliaddr, &len, &ttl, &t2_sec, &t2_frac);
+		n = recv_stamp_packet(sockfd, buffer, sizeof(buffer), &cliaddr, &len, &ttl, &t2_sec, &t2_frac, socket_family);
 
 		if (n < 0)
 		{
@@ -427,13 +570,22 @@ int main(int argc, char *argv[])
 		{
 			const struct stamp_reflector_packet *packet =
 				(const struct stamp_reflector_packet *)buffer;
-			char addr_str[INET_ADDRSTRLEN];
-			inet_ntop(AF_INET, &cliaddr.sin_addr, addr_str, sizeof(addr_str));
-			printf("Reflected packet Seq: %" PRIu32 " from %s:%d (TTL: %d)\n",
-				   (uint32_t)ntohl(packet->sender_seq_num),
-				   addr_str,
-				   ntohs(cliaddr.sin_port),
-				   ttl);
+			char addr_str[INET6_ADDRSTRLEN];
+			sockaddr_to_string(&cliaddr, addr_str, sizeof(addr_str));
+			uint16_t cli_port = sockaddr_get_port(&cliaddr);
+
+			if (cliaddr.ss_family == AF_INET6)
+			{
+				printf("Reflected packet Seq: %" PRIu32 " from [%s]:%u (Hop Limit: %d)\n",
+					   (uint32_t)ntohl(packet->sender_seq_num),
+					   addr_str, cli_port, ttl);
+			}
+			else
+			{
+				printf("Reflected packet Seq: %" PRIu32 " from %s:%u (TTL: %d)\n",
+					   (uint32_t)ntohl(packet->sender_seq_num),
+					   addr_str, cli_port, ttl);
+			}
 		}
 	}
 

@@ -1,11 +1,12 @@
 // Basic unit tests for RFC 8762 STAMP structures and helpers.
+// stamp.hを最初にインクルードして_POSIX_C_SOURCEを有効にする
+#include "../src/stamp.h"
+
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-
-#include "../src/stamp.h"
 
 static int g_tests_run = 0;
 static int g_tests_failed = 0;
@@ -167,6 +168,103 @@ static void test_byte_order(void)
     EXPECT_EQ_ULL(ntohs(pkt.error_estimate), 0x1234, "error_estimate byte order");
 }
 
+// IPv6対応ユーティリティ関数のテスト
+static void test_get_sockaddr_len(void)
+{
+    EXPECT_EQ_ULL(get_sockaddr_len(AF_INET), sizeof(struct sockaddr_in),
+                  "get_sockaddr_len AF_INET");
+    EXPECT_EQ_ULL(get_sockaddr_len(AF_INET6), sizeof(struct sockaddr_in6),
+                  "get_sockaddr_len AF_INET6");
+}
+
+static void test_sockaddr_get_port(void)
+{
+    struct sockaddr_storage ss;
+
+    // IPv4
+    memset(&ss, 0, sizeof(ss));
+    {
+        struct sockaddr_in *sin = (struct sockaddr_in *)&ss;
+        sin->sin_family = AF_INET;
+        sin->sin_port = htons(862);
+    }
+    EXPECT_EQ_ULL(sockaddr_get_port(&ss), 862, "sockaddr_get_port IPv4");
+
+    // IPv6
+    memset(&ss, 0, sizeof(ss));
+    {
+        struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&ss;
+        sin6->sin6_family = AF_INET6;
+        sin6->sin6_port = htons(8080);
+    }
+    EXPECT_EQ_ULL(sockaddr_get_port(&ss), 8080, "sockaddr_get_port IPv6");
+
+    // NULL
+    EXPECT_EQ_ULL(sockaddr_get_port(NULL), 0, "sockaddr_get_port NULL");
+}
+
+static void test_sockaddr_to_string(void)
+{
+    struct sockaddr_storage ss;
+    char buf[INET6_ADDRSTRLEN];
+
+    // IPv4
+    memset(&ss, 0, sizeof(ss));
+    {
+        struct sockaddr_in *sin = (struct sockaddr_in *)&ss;
+        sin->sin_family = AF_INET;
+        inet_pton(AF_INET, "127.0.0.1", &sin->sin_addr);
+    }
+    EXPECT_TRUE(sockaddr_to_string(&ss, buf, sizeof(buf)) != NULL,
+                "sockaddr_to_string IPv4 success");
+    EXPECT_TRUE(strcmp(buf, "127.0.0.1") == 0, "sockaddr_to_string IPv4 value");
+
+    // IPv6
+    memset(&ss, 0, sizeof(ss));
+    {
+        struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&ss;
+        sin6->sin6_family = AF_INET6;
+        inet_pton(AF_INET6, "::1", &sin6->sin6_addr);
+    }
+    EXPECT_TRUE(sockaddr_to_string(&ss, buf, sizeof(buf)) != NULL,
+                "sockaddr_to_string IPv6 success");
+    EXPECT_TRUE(strcmp(buf, "::1") == 0, "sockaddr_to_string IPv6 value");
+
+    // NULL cases
+    EXPECT_TRUE(sockaddr_to_string(NULL, buf, sizeof(buf)) == NULL,
+                "sockaddr_to_string NULL addr");
+    EXPECT_TRUE(sockaddr_to_string(&ss, NULL, sizeof(buf)) == NULL,
+                "sockaddr_to_string NULL buf");
+}
+
+static void test_resolve_address(void)
+{
+    struct sockaddr_storage ss;
+    socklen_t len;
+
+    // IPv4 loopback
+    EXPECT_TRUE(resolve_address("127.0.0.1", 862, AF_INET, &ss, &len) == 0,
+                "resolve_address IPv4 loopback");
+    EXPECT_EQ_ULL(ss.ss_family, AF_INET, "resolve_address IPv4 family");
+    EXPECT_EQ_ULL(sockaddr_get_port(&ss), 862, "resolve_address IPv4 port");
+
+    // IPv6 loopback
+    EXPECT_TRUE(resolve_address("::1", 862, AF_INET6, &ss, &len) == 0,
+                "resolve_address IPv6 loopback");
+    EXPECT_EQ_ULL(ss.ss_family, AF_INET6, "resolve_address IPv6 family");
+    EXPECT_EQ_ULL(sockaddr_get_port(&ss), 862, "resolve_address IPv6 port");
+
+    // Invalid address
+    EXPECT_TRUE(resolve_address("invalid.address.example", 862, AF_INET, &ss, &len) != 0,
+                "resolve_address invalid hostname");
+
+    // NULL cases
+    EXPECT_TRUE(resolve_address(NULL, 862, AF_INET, &ss, &len) != 0,
+                "resolve_address NULL host");
+    EXPECT_TRUE(resolve_address("127.0.0.1", 862, AF_INET, NULL, &len) != 0,
+                "resolve_address NULL out_addr");
+}
+
 int main(void)
 {
     test_constants();
@@ -175,6 +273,11 @@ int main(void)
     test_ntp_to_double();
     test_get_ntp_timestamp();
     test_byte_order();
+    // IPv6対応テスト
+    test_get_sockaddr_len();
+    test_sockaddr_get_port();
+    test_sockaddr_to_string();
+    test_resolve_address();
 
     if (g_tests_failed == 0)
     {
