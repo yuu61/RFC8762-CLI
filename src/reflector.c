@@ -598,7 +598,7 @@ int main(int argc, char *argv[])
 
 			if (sockaddr_to_string(&cliaddr, addr_str, sizeof(addr_str)) == NULL)
 			{
-				strcpy_s(addr_str, sizeof(addr_str), "<unknown>");
+				snprintf(addr_str, sizeof(addr_str), "<unknown>");
 			}
 			uint16_t cli_port = sockaddr_get_port(&cliaddr);
 

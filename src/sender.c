@@ -517,7 +517,7 @@ int main(int argc, char *argv[])
         if (sockaddr_to_string(&servaddr, addr_str, sizeof(addr_str)) == NULL)
         {
             fprintf(stderr, "Warning: Failed to convert address to string\n");
-            strcpy_s(addr_str, sizeof(addr_str), "<unknown>");
+            snprintf(addr_str, sizeof(addr_str), "<unknown>");
         }
 
         if (servaddr.ss_family == AF_INET6)
