@@ -268,8 +268,19 @@ static SOCKET init_reflector_socket(uint16_t port, int af_hint, int *out_family)
 		{
 #ifdef IPV6_RECVHOPLIMIT
 			int recv_hop = 1;
-			(void)setsockopt(sockfd, IPPROTO_IPV6, IPV6_RECVHOPLIMIT,
-							 (const char *)&recv_hop, sizeof(recv_hop));
+			if (setsockopt(sockfd, IPPROTO_IPV6, IPV6_RECVHOPLIMIT,
+						   (const char *)&recv_hop, sizeof(recv_hop)) < 0)
+			{
+				fprintf(stderr, "Warning: IPV6_RECVHOPLIMIT failed (error %d)\n", SOCKET_ERRNO);
+			}
+#elif defined(IPV6_HOPLIMIT)
+			// Windows: IPV6_HOPLIMITを試行
+			int recv_hop = 1;
+			if (setsockopt(sockfd, IPPROTO_IPV6, IPV6_HOPLIMIT,
+						   (const char *)&recv_hop, sizeof(recv_hop)) < 0)
+			{
+				fprintf(stderr, "Warning: IPV6_HOPLIMIT failed (error %d)\n", SOCKET_ERRNO);
+			}
 #endif
 		}
 
@@ -400,10 +411,15 @@ static int reflect_packet(SOCKET sockfd, uint8_t *buffer, int send_len,
 	packet->timestamp_frac = t3_frac;
 
 	// パケットの返送
-	if (sendto(sockfd, (const char *)buffer, send_len, 0,
-			   (const struct sockaddr *)cliaddr, len) < 0)
+	int send_result = sendto(sockfd, (const char *)buffer, send_len, 0,
+							 (const struct sockaddr *)cliaddr, len);
+	if (send_result < 0)
 	{
-		PRINT_SOCKET_ERROR("sendto failed");
+		int err = SOCKET_ERRNO;
+		char addr_str[INET6_ADDRSTRLEN];
+		sockaddr_to_string(cliaddr, addr_str, sizeof(addr_str));
+		fprintf(stderr, "sendto failed: error=%d, dest=%s, addrlen=%d, family=%d, send_len=%d\n",
+				err, addr_str, (int)len, cliaddr->ss_family, send_len);
 		g_stats.packets_dropped++;
 		return -1;
 	}
@@ -734,6 +750,15 @@ int main(int argc, char *argv[])
 		if (n == 0)
 		{
 			continue;
+		}
+
+		// 受信パケット情報のデバッグ出力
+		{
+			char addr_str[INET6_ADDRSTRLEN];
+			sockaddr_to_string(&cliaddr, addr_str, sizeof(addr_str));
+			uint16_t cli_port = sockaddr_get_port(&cliaddr);
+			fprintf(stderr, "DEBUG: Received %d bytes from [%s]:%u (family=%d, addrlen=%d, ttl=%d)\n",
+					n, addr_str, cli_port, cliaddr.ss_family, (int)len, ttl);
 		}
 
 		// パケットサイズが小さい場合はベースサイズに拡張
