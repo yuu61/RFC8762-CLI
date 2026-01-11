@@ -50,7 +50,7 @@ git commit -m "commit message"
 
 #### ✅ すべてのチェックに合格
 
-```
+```bash
 === Pre-commit Hook ===
 
 Checking for merge conflicts... OK
@@ -67,7 +67,7 @@ Checking indentation (.editorconfig)... OK
 
 #### ⚠️ チェックが引っかかった場合（自動修正)
 
-```
+```bash
 === Pre-commit Hook ===
 
 Checking for merge conflicts... OK
@@ -89,7 +89,7 @@ git commit -m "commit message"
 
 エラーが発生した場合（例：UTF-8 以外のエンコーディング）：
 
-```
+```bash
 Checking file encoding (UTF-8)... FAILED
   UTF-8 以外のエンコーディングが見つかりました：
     - src/data.txt (utf-16)
@@ -131,7 +131,7 @@ Copy-Item .githooks/pre-commit .git/hooks/pre-commit -Force
 
 Linux/macOS で以下のエラーが出た場合：
 
-```
+```bash
 Permission denied: .git/hooks/pre-commit
 ```
 
