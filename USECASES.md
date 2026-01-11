@@ -38,6 +38,61 @@
 ./build/sender 192.168.1.100 8888
 ```
 
+### IPv6 での測定
+
+IPv6ネットワークでの性能測定を行います。
+
+```bash
+# ターミナル1: Reflectorを起動（デュアルスタック）
+./build/reflector
+
+# ターミナル2: IPv6でSenderを起動
+./build/sender ::1
+```
+
+IPv6アドレスでリモートホストに接続：
+
+```bash
+./build/sender 2001:db8::1
+./build/sender fe80::1%eth0    # リンクローカルアドレス
+```
+
+### ホスト名での接続
+
+IPアドレスの代わりにホスト名を使用できます：
+
+```bash
+# ホスト名で接続（自動的にIPv4/IPv6が選択される）
+./build/sender example.com
+
+# ホスト名でカスタムポート接続
+./build/sender example.com 8888
+```
+
+### アドレスファミリの強制指定
+
+デュアルスタック環境で明示的にアドレスファミリを指定できます：
+
+```bash
+# Reflector: IPv4のみ
+./build/reflector -4
+
+# Reflector: IPv6のみ
+./build/reflector -6
+
+# Sender: IPv4を強制
+./build/sender -4 192.168.1.100
+
+# Sender: IPv6を強制
+./build/sender -6 ::1
+
+# ホスト名をIPv4で解決
+./build/sender -4 example.com
+
+# ホスト名をIPv6で解決
+./build/sender -6 example.com
+```
+
 ## 実践的なユースケース
 
 ### ネットワーク品質の監視
@@ -225,3 +280,43 @@ CMake Error: Could not find CMAKE_PROJECT_VERSION
 
 **対処法:**
 - CMake 3.16以上をインストール
+
+### シナリオ4: IPv6関連の問題
+
+**症状: IPv6で接続できない**
+```
+Error: getaddrinfo failed
+```
+
+**考えられる原因:**
+- システムでIPv6が無効化されている
+- ネットワークがIPv6をサポートしていない
+- ファイアウォールでIPv6がブロックされている
+
+**対処法:**
+1. IPv6が有効か確認：`ip -6 addr show`（Linux）または `ipconfig`（Windows）
+2. `-4` オプションでIPv4を強制使用：`./build/sender -4 127.0.0.1`
+3. ファイアウォールでUDP 862番ポートのIPv6を許可
+
+**症状: デュアルスタックでIPv4クライアントから接続できない**
+
+**考えられる原因:**
+- Reflectorが `-6` オプションで起動されている
+
+**対処法:**
+- Reflectorをオプションなしで起動（デュアルスタック）するか、`-4` で起動
+
+**症状: ホスト名の解決に失敗**
+```
+Error: getaddrinfo failed
+```
+
+**考えられる原因:**
+- DNSサーバーに接続できない
+- ホスト名が存在しない
+- 指定されたアドレスファミリのレコードがない
+
+**対処法:**
+1. `nslookup` や `dig` でホスト名を確認
+2. IPアドレスを直接指定
+3. `-4` または `-6` を外して自動選択に任せる

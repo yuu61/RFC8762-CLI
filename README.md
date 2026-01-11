@@ -14,6 +14,8 @@ STAMPは、ネットワークの性能測定を行うための標準化された
 - **RTT (Round-Trip Time) 測定**: パケットの往復時間を精密に測定
 - **遅延測定**: 一方向および双方向の遅延を計測
 - **統計情報**: パケット送受信数、最小/最大/平均RTTを表示
+- **IPv4/IPv6 デュアルスタック対応**: IPv4とIPv6の両方に対応
+- **ホスト名解決**: IPアドレスだけでなくホスト名でも指定可能
 - **クロスプラットフォーム対応**: Windows、Linux、macOS で動作
 
 ### 関連ドキュメント
@@ -106,7 +108,7 @@ RTT min/avg/max = 0.300/0.300/0.300 ms
 ### 基本的なコマンド
 
 ```bash
-# デフォルトポート (862) で起動
+# デフォルトポート (862) で起動（デュアルスタック）
 ./build/reflector
 
 # カスタムポート (8888) で起動
@@ -117,6 +119,37 @@ RTT min/avg/max = 0.300/0.300/0.300 ms
 
 # カスタムポートで接続
 ./build/sender 192.168.1.100 8888
+```
+
+### IPv6 での使用
+
+```bash
+# IPv6 ローカルホストに接続
+./build/sender ::1
+
+# IPv6 アドレスに接続
+./build/sender 2001:db8::1
+
+# ホスト名で接続（自動解決）
+./build/sender example.com
+```
+
+### アドレスファミリの指定
+
+```bash
+# IPv4 を強制
+./build/sender -4 192.168.1.100
+./build/reflector -4
+
+# IPv6 を強制
+./build/sender -6 ::1
+./build/reflector -6
+
+# ホスト名を IPv4 で解決
+./build/sender -4 example.com
+
+# ホスト名を IPv6 で解決
+./build/sender -6 example.com
 ```
 
 **より詳しい使用例は [USECASES.md](USECASES.md) をご覧ください。**
