@@ -417,8 +417,15 @@ static void test_resolve_address(void)
     // ファミリ不一致
     EXPECT_TRUE(resolve_address("127.0.0.1", 862, AF_INET6, &ss, &len) != 0,
                 "resolve_address IPv4 addr with AF_INET6");
-    EXPECT_TRUE(resolve_address("::1", 862, AF_INET, &ss, &len) != 0,
-                "resolve_address IPv6 addr with AF_INET");
+    if (ipv6_ok)
+    {
+        EXPECT_TRUE(resolve_address("::1", 862, AF_INET, &ss, &len) != 0,
+                    "resolve_address IPv6 addr with AF_INET");
+    }
+    else
+    {
+        SKIP_TEST("resolve_address IPv6 addr with AF_INET");
+    }
 }
 
 int main(void)
