@@ -44,26 +44,25 @@ jobs:
         uses: github/codeql-action/analyze@v4
 
   build:
-    name: Build (${{ matrix.os }}, ${{ matrix.build_type }})
+    name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
 
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, windows-latest]
-        build_type: [debug, release]
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
 
       - name: Cache CMake build
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
-          path: build/${{ matrix.build_type }}
-          key: ${{ runner.os }}-cmake-${{ matrix.build_type }}-${{ hashFiles('CMakeLists.txt', 'src/**', 'tests/**') }}
+          path: build
+          key: ${{ runner.os }}-cmake-${{ hashFiles('CMakeLists.txt', 'src/**', 'tests/**') }}
           restore-keys: |
-            ${{ runner.os }}-cmake-${{ matrix.build_type }}-
+            ${{ runner.os }}-cmake-
 
       - name: Setup GCC 14 (Linux)
         if: runner.os == 'Linux'
@@ -95,36 +94,62 @@ jobs:
           gcc --version
           gcc --version | head -1 | grep -E "gcc.* 1[4-9]\." || (echo "GCC 14+ required" && exit 1)
 
+      # Configure Debug & Release in parallel
       - name: Configure CMake (Linux)
         if: runner.os == 'Linux'
         run: |
-          cmake -B build/${{ matrix.build_type }} \
-            -DCMAKE_BUILD_TYPE=${{ matrix.build_type == 'debug' && 'Debug' || 'Release' }} \
+          cmake -B build/debug \
+            -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_C_COMPILER=gcc-14 \
-            -DPORTABLE_BUILD=ON
+            -DPORTABLE_BUILD=ON &
+          cmake -B build/release \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=gcc-14 \
+            -DPORTABLE_BUILD=ON &
+          wait
 
       - name: Configure CMake (Windows)
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: |
-          cmake -B build/${{ matrix.build_type }} -G Ninja \
-            -DCMAKE_BUILD_TYPE=${{ matrix.build_type == 'debug' && 'Debug' || 'Release' }} \
-            -DPORTABLE_BUILD=ON
+          cmake -B build/debug -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DPORTABLE_BUILD=ON &
+          cmake -B build/release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPORTABLE_BUILD=ON &
+          wait
 
+      # Build Debug & Release in parallel
       - name: Build (Linux)
         if: runner.os == 'Linux'
-        run: cmake --build build/${{ matrix.build_type }} --parallel $(nproc)
+        run: |
+          cmake --build build/debug --parallel &
+          cmake --build build/release --parallel &
+          wait
 
       - name: Build (Windows)
         if: runner.os == 'Windows'
         shell: msys2 {0}
-        run: cmake --build build/${{ matrix.build_type }} --parallel
+        run: |
+          cmake --build build/debug --parallel &
+          cmake --build build/release --parallel &
+          wait
 
+      # Run tests (sequential to avoid resource contention)
       - name: Run tests (Linux)
         if: runner.os == 'Linux'
-        run: ctest --test-dir build/${{ matrix.build_type }} --output-on-failure --parallel $(nproc)
+        run: |
+          echo "=== Debug tests ==="
+          ctest --test-dir build/debug --output-on-failure --parallel $(nproc)
+          echo "=== Release tests ==="
+          ctest --test-dir build/release --output-on-failure --parallel $(nproc)
 
       - name: Run tests (Windows)
         if: runner.os == 'Windows'
         shell: msys2 {0}
-        run: ctest --test-dir build/${{ matrix.build_type }} --output-on-failure
+        run: |
+          echo "=== Debug tests ==="
+          ctest --test-dir build/debug --output-on-failure
+          echo "=== Release tests ==="
+          ctest --test-dir build/release --output-on-failure
