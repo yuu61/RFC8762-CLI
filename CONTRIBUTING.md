@@ -67,38 +67,21 @@ RFC 8762 STAMP実装プロジェクトへの貢献を歓迎します！
    - 適切なコメントを追加
    - テストを追加/更新
 
-4. **Pre-commit チェックの設定**（初回のみ）
-
-   以下のコマンドでネイティブ Git Hooks を有効化します：
-
-   ```bash
-   git config core.hooksPath .githooks
-   ```
-
-   詳細は [NATIVE_HOOKS_SETUP.md](NATIVE_HOOKS_SETUP.md) を参照してください。
-
-5. **テストの実行**
+4. **テストの実行**
 
    ```bash
    make clean
    make test
    ```
 
-6. **コミット**
+5. **コミット**
 
    ```bash
    git add .
    git commit -m "Add: 簡潔な変更内容の説明"
    ```
 
-   コミット時に自動的に以下のチェックが実行されます：
-   - 末尾の空白削除
-   - ファイル末行の改行
-   - エンコーディング（UTF-8）
-   - 改行コード（LF）
-   - インデント規則
-
-7. **プッシュとプルリクエスト**
+6. **プッシュとプルリクエスト**
 
    ```bash
    git push origin feature/your-feature-name
