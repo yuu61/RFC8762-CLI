@@ -60,7 +60,8 @@ typedef int SOCKET;
 
 // コントロールメッセージバッファサイズ
 // WSA_CMSG_SPACE/CMSG_SPACE マクロはMinGW環境で符号変換警告を出すため、
-// 固定サイズを使用（TTL/HopLimit用intとtimespec両方に十分なサイズ）
+// 固定サイズを使用。128バイトはSO_TIMESTAMPING（3つのtimespec = 24バイト）、
+// TTL/HopLimit用int、および制御メッセージヘッダを格納するのに十分なサイズ。
 #define STAMP_CMSG_BUFSIZE 128
 
 // Linux: SO_BUSY_POLLの設定値（マイクロ秒）
@@ -455,17 +456,13 @@ static inline bool extract_kernel_timestamp_windows(WSAMSG *msg,
     if (!msg || !ntp_sec || !ntp_frac)
         return false;
 
-    WSACMSGHDR *cmsg;
     // MinGW WSA_CMSG_NXTHDR マクロの符号変換警告を抑制
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #endif
-    for (cmsg = WSA_CMSG_FIRSTHDR(msg); cmsg != NULL; cmsg = WSA_CMSG_NXTHDR(msg, cmsg))
+    for (WSACMSGHDR *cmsg = WSA_CMSG_FIRSTHDR(msg); cmsg != NULL; cmsg = WSA_CMSG_NXTHDR(msg, cmsg))
     {
-#if defined(__GNUC__) && !defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
         // SO_TIMESTAMP または SO_TIMESTAMP_ID: カーネルタイムスタンプ
         // SIO_TIMESTAMPINGで有効化した場合、SO_TIMESTAMP_IDで返される
         if (cmsg->cmsg_level == SOL_SOCKET &&
@@ -494,6 +491,9 @@ static inline bool extract_kernel_timestamp_windows(WSAMSG *msg,
             }
         }
     }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
     return false;
 }
 #endif

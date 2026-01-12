@@ -165,7 +165,6 @@ static void print_usage(const char *prog)
 
 #ifdef _WIN32
 static LPFN_WSARECVMSG g_wsa_recvmsg = NULL;
-static bool g_kernel_timestamp_enabled = false; // カーネルタイムスタンプが有効か
 #endif
 
 /**
@@ -257,14 +256,12 @@ static SOCKET init_reflector_socket(uint16_t port, int af_hint, int *out_family)
                          &ts_config, sizeof(ts_config),
                          NULL, 0, &bytes_returned, NULL, NULL) == 0)
             {
-                g_kernel_timestamp_enabled = true;
                 printf("Kernel timestamping enabled (SIO_TIMESTAMPING)\n");
             }
             else
             {
                 // Windows 10 1903未満では失敗する可能性がある
                 // フォールバック: ユーザースペースタイムスタンプを使用
-                g_kernel_timestamp_enabled = false;
                 fprintf(stderr, "Warning: SIO_TIMESTAMPING not available (error %d); using userspace timestamps\n",
                         WSAGetLastError());
             }

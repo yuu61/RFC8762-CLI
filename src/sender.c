@@ -28,7 +28,6 @@ static struct sender_stats g_stats = {0, 0, 0, 1e9, 0, 0};
 
 #ifdef _WIN32
 static LPFN_WSARECVMSG g_wsa_recvmsg = NULL;
-static bool g_kernel_timestamp_enabled = false; // カーネルタイムスタンプが有効か
 #endif
 
 /**
@@ -129,12 +128,14 @@ static SOCKET init_socket(const char *host, uint16_t port,
                          &ts_config, sizeof(ts_config),
                          NULL, 0, &bytes_returned, NULL, NULL) == 0)
             {
-                g_kernel_timestamp_enabled = true;
+                printf("Kernel timestamping enabled (SIO_TIMESTAMPING)\n");
             }
             else
             {
                 // Windows 10 1903未満では失敗する可能性がある
-                g_kernel_timestamp_enabled = false;
+                // フォールバック: ユーザースペースタイムスタンプを使用
+                fprintf(stderr, "Warning: SIO_TIMESTAMPING not available (error %d); using userspace timestamps\n",
+                        WSAGetLastError());
             }
         }
 #else
