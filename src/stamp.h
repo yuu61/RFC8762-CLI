@@ -190,13 +190,9 @@ struct stamp_reflector_packet
  * @param frac 小数部分（ネットワークバイトオーダー）
  * @return 成功時0、エラー時-1
  */
+__attribute__((nonnull(1, 2)))
 static inline int get_ntp_timestamp(uint32_t *sec, uint32_t *frac)
 {
-    if (!sec || !frac)
-    {
-        return -1;
-    }
-
 #ifdef _WIN32
     // Windows: GetSystemTimeAsFileTime を使用
     FILETIME ft;
@@ -242,6 +238,7 @@ static inline int get_ntp_timestamp(uint32_t *sec, uint32_t *frac)
  * @param frac 小数部分（ネットワークバイトオーダー）
  * @return UNIX時刻（秒）
  */
+__attribute__((pure))
 static inline double ntp_to_double(uint32_t sec, uint32_t frac)
 {
     uint32_t s = ntohl(sec);
@@ -250,16 +247,18 @@ static inline double ntp_to_double(uint32_t sec, uint32_t frac)
 }
 
 /**
- * STAMPパケットの妥当性チェック
+ * STAMPパケットの妥当性チェック（サイズのみ検証）
+ * @param packet パケットデータへのポインタ（NULLは未定義動作）
+ * @param size パケットサイズ（バイト）
  * @return 妥当な場合1、不正な場合0
+ * @note パケット内容（MBZフィールド等）は検証しない。サイズが
+ *       STAMP_BASE_PACKET_SIZE以上であれば妥当と判定する。
  */
+__attribute__((nonnull(1), pure))
 static inline int validate_stamp_packet(const void *packet, int size)
 {
-    if (!packet || size < STAMP_BASE_PACKET_SIZE)
-    {
-        return 0;
-    }
-    return 1;
+    (void)packet; // nonnull属性で保証
+    return size >= STAMP_BASE_PACKET_SIZE;
 }
 
 // =============================================================================
@@ -383,15 +382,11 @@ static inline void stamp_signal_handler(int signal)
  * @param port パース結果を格納するポインタ
  * @return 成功時0、エラー時-1
  */
+__attribute__((nonnull(1, 2)))
 static inline int parse_port(const char *arg, uint16_t *port)
 {
     char *end = NULL;
     unsigned long value;
-
-    if (!arg || !port)
-    {
-        return -1;
-    }
 
     // 空文字列のチェック
     if (*arg == '\0')
@@ -593,6 +588,7 @@ static inline bool extract_kernel_timestamp_linux(struct msghdr *msg,
  * @param family アドレスファミリ (AF_INET or AF_INET6)
  * @return 構造体サイズ
  */
+__attribute__((const))
 static inline socklen_t get_sockaddr_len(int family)
 {
     return (family == AF_INET6) ? (socklen_t)sizeof(struct sockaddr_in6)
@@ -625,10 +621,11 @@ static inline uint16_t sockaddr_get_port(const struct sockaddr_storage *addr)
  * sockaddr_storageをアドレス文字列に変換
  * @return 成功時buf、エラー時NULL
  */
+__attribute__((nonnull(1, 2)))
 static inline const char *sockaddr_to_string(const struct sockaddr_storage *addr,
                                              char *buf, size_t buflen)
 {
-    if (!addr || !buf || buflen == 0)
+    if (buflen == 0)
         return NULL;
 
     socklen_t addrlen = get_sockaddr_len(addr->ss_family);
@@ -741,14 +738,12 @@ static inline int resolve_address_list(const char *host, uint16_t port, int af_h
  * @param af_hint AF_UNSPEC=自動, AF_INET, AF_INET6
  * @return 成功時0、エラー時-1
  */
+__attribute__((nonnull(1, 4, 5)))
 static inline int resolve_address(const char *host, uint16_t port, int af_hint,
                                   struct sockaddr_storage *out_addr,
                                   socklen_t *out_addrlen)
 {
     struct addrinfo *result, *rp;
-
-    if (!host || !out_addr || !out_addrlen)
-        return -1;
 
     if (resolve_address_list(host, port, af_hint, &result) != 0)
     {

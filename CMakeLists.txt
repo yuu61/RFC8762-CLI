@@ -2,10 +2,10 @@
 cmake_minimum_required(VERSION 3.16)
 project(RFC8762-CLI VERSION 1.0.0 LANGUAGES C)
 
-# C standard settings
+# C standard settings (gnu17 = C17 + GNU extensions)
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
-set(CMAKE_C_EXTENSIONS OFF)
+set(CMAKE_C_EXTENSIONS ON)
 
 # Default build type to Release if not specified
 if(NOT CMAKE_BUILD_TYPE)

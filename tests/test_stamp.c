@@ -149,8 +149,7 @@ static void test_validate_stamp_packet(void)
                 "validate larger size");
     EXPECT_TRUE(validate_stamp_packet(buffer, STAMP_BASE_PACKET_SIZE - 1) == 0,
                 "validate too small");
-    EXPECT_TRUE(validate_stamp_packet(NULL, STAMP_BASE_PACKET_SIZE) == 0,
-                "validate null");
+    // NULLテストは削除: nonnull属性により未定義動作となるため
 }
 
 static void test_ntp_to_double(void)
@@ -176,11 +175,7 @@ static void test_get_ntp_timestamp(void)
     double t_unix = ntp_to_double(sec, frac);
     time_t now = time(NULL);
     EXPECT_TRUE(fabs(t_unix - (double)now) < 1.0, "ntp timestamp close to wall clock");
-
-    rc = get_ntp_timestamp(NULL, &frac);
-    EXPECT_TRUE(rc != 0, "get_ntp_timestamp rejects null sec");
-    rc = get_ntp_timestamp(&sec, NULL);
-    EXPECT_TRUE(rc != 0, "get_ntp_timestamp rejects null frac");
+    // NULLテストは削除: nonnull属性により未定義動作となるため
 }
 
 static void test_byte_order(void)
@@ -202,6 +197,40 @@ static void test_byte_order(void)
     // error_estimate byte order
     pkt.error_estimate = htons(0x1234);
     EXPECT_EQ_ULL(ntohs(pkt.error_estimate), 0x1234, "error_estimate byte order");
+}
+
+static void test_parse_port(void)
+{
+    uint16_t port;
+    int rc;
+
+    rc = parse_port("862", &port);
+    EXPECT_TRUE(rc == 0, "parse_port 862 success");
+    EXPECT_EQ_ULL(port, 862, "parse_port 862 value");
+
+    rc = parse_port("1", &port);
+    EXPECT_TRUE(rc == 0, "parse_port min port success");
+    EXPECT_EQ_ULL(port, 1, "parse_port min port value");
+
+    rc = parse_port("65535", &port);
+    EXPECT_TRUE(rc == 0, "parse_port max port success");
+    EXPECT_EQ_ULL(port, 65535, "parse_port max port value");
+
+    rc = parse_port("8080", &port);
+    EXPECT_TRUE(rc == 0, "parse_port 8080 success");
+    EXPECT_EQ_ULL(port, 8080, "parse_port 8080 value");
+
+    rc = parse_port("0862", &port);
+    EXPECT_TRUE(rc == 0, "parse_port leading zero success");
+    EXPECT_EQ_ULL(port, 862, "parse_port leading zero value");
+
+    EXPECT_TRUE(parse_port("0", &port) != 0, "parse_port 0 rejected");
+    EXPECT_TRUE(parse_port("65536", &port) != 0, "parse_port 65536 rejected");
+    EXPECT_TRUE(parse_port("100000", &port) != 0, "parse_port overflow rejected");
+    EXPECT_TRUE(parse_port("", &port) != 0, "parse_port empty rejected");
+    EXPECT_TRUE(parse_port("123abc", &port) != 0, "parse_port trailing chars rejected");
+    EXPECT_TRUE(parse_port("abc", &port) != 0, "parse_port non-numeric rejected");
+    EXPECT_TRUE(parse_port("-1", &port) != 0, "parse_port negative rejected");
 }
 
 // IPv6対応ユーティリティ関数のテスト
@@ -311,11 +340,7 @@ static void test_sockaddr_to_string(void)
         SKIP_TEST("sockaddr_to_string IPv6 not available");
     }
 
-    // NULL cases
-    EXPECT_TRUE(sockaddr_to_string(NULL, buf, sizeof(buf)) == NULL,
-                "sockaddr_to_string NULL addr");
-    EXPECT_TRUE(sockaddr_to_string(&ss, NULL, sizeof(buf)) == NULL,
-                "sockaddr_to_string NULL buf");
+    // NULLテストは削除: nonnull属性により未定義動作となるため
 
     // buflen = 0
     EXPECT_TRUE(sockaddr_to_string(&ss, buf, 0) == NULL,
@@ -506,13 +531,7 @@ static void test_resolve_address(void)
     EXPECT_TRUE(resolve_address("invalid.invalid", 862, AF_INET, &ss, &len) != 0,
                 "resolve_address invalid hostname");
 
-    // NULL cases
-    EXPECT_TRUE(resolve_address(NULL, 862, AF_INET, &ss, &len) != 0,
-                "resolve_address NULL host");
-    EXPECT_TRUE(resolve_address("127.0.0.1", 862, AF_INET, NULL, &len) != 0,
-                "resolve_address NULL out_addr");
-    EXPECT_TRUE(resolve_address("127.0.0.1", 862, AF_INET, &ss, NULL) != 0,
-                "resolve_address NULL out_addrlen");
+    // NULLテストは削除: nonnull属性により未定義動作となるため
 
     // ファミリ不一致
     EXPECT_TRUE(resolve_address("127.0.0.1", 862, AF_INET6, &ss, &len) != 0,
@@ -703,6 +722,7 @@ int main(void)
     test_ntp_to_double();
     test_get_ntp_timestamp();
     test_byte_order();
+    test_parse_port();
     // IPv6対応テスト
     test_get_sockaddr_len();
     test_sockaddr_get_port();

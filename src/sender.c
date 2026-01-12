@@ -7,6 +7,10 @@
 #include <mswsock.h>
 #endif
 
+// 分岐予測ヒント（GNU拡張）
+#define likely(x) __builtin_expect(!!(x), 1)
+#define unlikely(x) __builtin_expect(!!(x), 0)
+
 #define PORT STAMP_PORT       // STAMP標準ポート番号
 #define SERVER_IP "127.0.0.1" // デフォルトのサーバーIPアドレス（ローカルホスト）
 #define SEND_INTERVAL_SEC 1   // 送信間隔（秒）
@@ -246,7 +250,7 @@ static int send_stamp_packet(SOCKET sockfd, uint32_t seq,
     tx_packet->seq_num = htonl(seq);
     tx_packet->error_estimate = htons(ERROR_ESTIMATE_DEFAULT);
     // T1: 送信時刻の取得
-    if (get_ntp_timestamp(&t1_sec, &t1_frac) != 0)
+    if (unlikely(get_ntp_timestamp(&t1_sec, &t1_frac) != 0))
     {
         fprintf(stderr, "Failed to get T1 timestamp\n");
         return -1;
@@ -255,7 +259,7 @@ static int send_stamp_packet(SOCKET sockfd, uint32_t seq,
     tx_packet->timestamp_frac = t1_frac;
 
     // パケット送信
-    if (send(sockfd, (const char *)tx_packet, (int)sizeof(*tx_packet), 0) < 0)
+    if (unlikely(send(sockfd, (const char *)tx_packet, (int)sizeof(*tx_packet), 0) < 0))
     {
         PRINT_SOCKET_ERROR("send failed");
         return -1;
@@ -373,7 +377,7 @@ static int receive_and_process_packet(SOCKET sockfd, const struct stamp_sender_p
 
     // パケット受信（カーネルタイムスタンプ付き）
     int n = recv_with_timestamp(sockfd, buffer, sizeof(buffer), &recvaddr, &len, &t4_sec, &t4_frac);
-    if (n < 0)
+    if (unlikely(n < 0))
     {
 #ifdef _WIN32
         if (SOCKET_ERRNO == WSAETIMEDOUT)
@@ -392,7 +396,7 @@ static int receive_and_process_packet(SOCKET sockfd, const struct stamp_sender_p
     }
 
     // パケット検証
-    if (!validate_stamp_packet(buffer, n))
+    if (unlikely(!validate_stamp_packet(buffer, n)))
     {
         fprintf(stderr, "Invalid packet received\n");
         return -1;
@@ -401,7 +405,7 @@ static int receive_and_process_packet(SOCKET sockfd, const struct stamp_sender_p
     memcpy(&rx_packet, buffer, sizeof(rx_packet));
 
     // シーケンス番号の確認
-    if (rx_packet.sender_seq_num != tx_packet->seq_num)
+    if (unlikely(rx_packet.sender_seq_num != tx_packet->seq_num))
     {
         fprintf(stderr, "Sequence number mismatch: expected %" PRIu32 ", got %" PRIu32 "\n",
                 (uint32_t)ntohl(tx_packet->seq_num), (uint32_t)ntohl(rx_packet.sender_seq_num));

@@ -7,6 +7,10 @@
 #include <mswsock.h>
 #endif
 
+// 分岐予測ヒント（GNU拡張）
+#define likely(x) __builtin_expect(!!(x), 1)
+#define unlikely(x) __builtin_expect(!!(x), 0)
+
 #define PORT STAMP_PORT // STAMP標準ポート番号
 
 // セッション統計情報
@@ -43,10 +47,11 @@ static bool g_debug_mode = false;
  * ファイアウォールルールを追加（nftables使用）
  * @return 成功時0、エラー時-1
  */
-static int add_firewall_rule(uint16_t port, int family)
+static int add_firewall_rule(uint16_t port,
+                             __attribute__((unused)) int family)
 {
     char cmd[FIREWALL_CMD_BUFSIZE];
-    (void)family; // nftables inet family handles both IPv4 and IPv6
+    // nftables inet family handles both IPv4 and IPv6
 
     // root権限チェック
     if (geteuid() != 0)
@@ -417,7 +422,7 @@ int reflect_packet(SOCKET sockfd, uint8_t *buffer, int send_len,
     uint32_t t3_sec, t3_frac;
 
     // バッファサイズの厳密な検証
-    if (send_len <= 0 || send_len > STAMP_MAX_PACKET_SIZE)
+    if (unlikely(send_len <= 0 || send_len > STAMP_MAX_PACKET_SIZE))
     {
         fprintf(stderr, "Invalid packet size: %d (valid range: 1-%d)\n",
                 send_len, STAMP_MAX_PACKET_SIZE);
@@ -456,7 +461,7 @@ int reflect_packet(SOCKET sockfd, uint8_t *buffer, int send_len,
     // T3: 送信時刻の取得（sendto()直前で取得してオーバーヘッドを最小化）
     // 注: パケットヘッダー設定後、sendto()直前でT3を取得することで
     // T2-T3間の処理時間をより正確に反映する
-    if (get_ntp_timestamp(&t3_sec, &t3_frac) != 0)
+    if (unlikely(get_ntp_timestamp(&t3_sec, &t3_frac) != 0))
     {
         fprintf(stderr, "Failed to get T3 timestamp\n");
         return -1;
@@ -467,7 +472,7 @@ int reflect_packet(SOCKET sockfd, uint8_t *buffer, int send_len,
     // パケットの返送（T3取得直後に送信）
     ssize_t send_result = sendto(sockfd, (const char *)buffer, (size_t)send_len, 0,
                                  (const struct sockaddr *)cliaddr, len);
-    if (send_result < 0)
+    if (unlikely(send_result < 0))
     {
         int err = SOCKET_ERRNO;
         char addr_str[INET6_ADDRSTRLEN];
@@ -491,7 +496,8 @@ int reflect_packet(SOCKET sockfd, uint8_t *buffer, int send_len,
 static inline __attribute__((always_inline, hot))
 int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
                       struct sockaddr_storage *cliaddr, socklen_t *len, uint8_t *ttl,
-                      uint32_t *t2_sec, uint32_t *t2_frac, int socket_family)
+                      uint32_t *t2_sec, uint32_t *t2_frac,
+                      __attribute__((unused)) int socket_family)
 {
 #ifdef _WIN32
     if (ttl)
@@ -580,7 +586,6 @@ int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
         }
     }
 
-    (void)socket_family; // Reserved for future family-specific handling (unused on Windows).
     return (int)bytes;
 #else
     struct msghdr msg;
@@ -604,7 +609,7 @@ int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
     msg.msg_controllen = sizeof(control);
 
     n = recvmsg(sockfd, &msg, 0);
-    if (n < 0)
+    if (unlikely(n < 0))
     {
         return -1;
     }
@@ -653,7 +658,6 @@ int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
         }
     }
 
-    (void)socket_family; // Reserved for future family-specific handling.
     return (int)n;
 #endif
 }
