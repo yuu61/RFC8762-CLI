@@ -1,155 +1,155 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+    push:
+        branches: [main]
+    pull_request:
+        branches: [main]
 
 jobs:
-  codeql:
-    name: CodeQL Analysis
-    runs-on: ubuntu-24.04
+    codeql:
+        name: CodeQL Analysis
+        runs-on: ubuntu-24.04
 
-    permissions:
-      actions: read
-      contents: read
-      security-events: write
+        permissions:
+            actions: read
+            contents: read
+            security-events: write
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v6
 
-      - name: Setup GCC 14
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-14
+            - name: Setup GCC 14
+              run: |
+                  sudo apt update
+                  sudo apt install -y gcc-14
 
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
-        with:
-          languages: cpp
+            - name: Initialize CodeQL
+              uses: github/codeql-action/init@v4
+              with:
+                  languages: cpp
 
-      - name: Configure CMake
-        run: |
-          cmake -B build/ci \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER=gcc-14 \
-            -DPORTABLE_BUILD=ON
+            - name: Configure CMake
+              run: |
+                  cmake -B build/ci \
+                    -DCMAKE_BUILD_TYPE=Release \
+                    -DCMAKE_C_COMPILER=gcc-14 \
+                    -DPORTABLE_BUILD=ON
 
-      - name: Build for CodeQL
-        run: cmake --build build/ci -j$(nproc)
+            - name: Build for CodeQL
+              run: cmake --build build/ci -j$(nproc)
 
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v4
+            - name: Perform CodeQL Analysis
+              uses: github/codeql-action/analyze@v4
 
-  build:
-    name: Build (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    build:
+        name: Build (${{ matrix.os }})
+        runs-on: ${{ matrix.os }}
 
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, windows-latest]
+        strategy:
+            fail-fast: false
+            matrix:
+                os: [ubuntu-24.04, windows-latest]
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v6
 
-      - name: Cache CMake build
-        uses: actions/cache@v5
-        with:
-          path: build
-          key: ${{ runner.os }}-cmake-${{ hashFiles('CMakeLists.txt', 'src/**', 'tests/**') }}
-          restore-keys: |
-            ${{ runner.os }}-cmake-
+            - name: Cache CMake build
+              uses: actions/cache@v5
+              with:
+                  path: build
+                  key: ${{ runner.os }}-cmake-${{ hashFiles('CMakeLists.txt', 'src/**', 'tests/**') }}
+                  restore-keys: |
+                      ${{ runner.os }}-cmake-
 
-      - name: Setup GCC 14 (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-14 g++-14
+            - name: Setup GCC 14 (Linux)
+              if: runner.os == 'Linux'
+              run: |
+                  sudo apt update
+                  sudo apt install -y gcc-14
 
-      - name: Setup MSYS2 with GCC (Windows)
-        if: runner.os == 'Windows'
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: UCRT64
-          update: true
-          install: >-
-            mingw-w64-ucrt-x86_64-gcc
-            mingw-w64-ucrt-x86_64-cmake
-            mingw-w64-ucrt-x86_64-ninja
+            - name: Setup MSYS2 with GCC (Windows)
+              if: runner.os == 'Windows'
+              uses: msys2/setup-msys2@v2
+              with:
+                  msystem: UCRT64
+                  update: true
+                  install: >-
+                      mingw-w64-ucrt-x86_64-gcc
+                      mingw-w64-ucrt-x86_64-cmake
+                      mingw-w64-ucrt-x86_64-ninja
 
-      - name: Verify GCC version (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          gcc-14 --version
-          gcc-14 --version | head -1 | grep -E "gcc.* 1[4-9]\." || (echo "GCC 14+ required" && exit 1)
+            - name: Verify GCC version (Linux)
+              if: runner.os == 'Linux'
+              run: |
+                  gcc-14 --version
+                  gcc-14 --version | head -1 | grep -E "gcc.* 1[4-9]\." || (echo "GCC 14+ required" && exit 1)
 
-      - name: Verify GCC version (Windows)
-        if: runner.os == 'Windows'
-        shell: msys2 {0}
-        run: |
-          gcc --version
-          gcc --version | head -1 | grep -E "gcc.* 1[4-9]\." || (echo "GCC 14+ required" && exit 1)
+            - name: Verify GCC version (Windows)
+              if: runner.os == 'Windows'
+              shell: msys2 {0}
+              run: |
+                  gcc --version
+                  gcc --version | head -1 | grep -E "gcc.* 1[4-9]\." || (echo "GCC 14+ required" && exit 1)
 
-      # Configure Debug & Release in parallel
-      - name: Configure CMake (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          cmake -B build/debug \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_C_COMPILER=gcc-14 \
-            -DPORTABLE_BUILD=ON &
-          cmake -B build/release \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER=gcc-14 \
-            -DPORTABLE_BUILD=ON &
-          wait
+            # Configure Debug & Release in parallel
+            - name: Configure CMake (Linux)
+              if: runner.os == 'Linux'
+              run: |
+                  cmake -B build/debug \
+                    -DCMAKE_BUILD_TYPE=Debug \
+                    -DCMAKE_C_COMPILER=gcc-14 \
+                    -DPORTABLE_BUILD=ON &
+                  cmake -B build/release \
+                    -DCMAKE_BUILD_TYPE=Release \
+                    -DCMAKE_C_COMPILER=gcc-14 \
+                    -DPORTABLE_BUILD=ON &
+                  wait
 
-      - name: Configure CMake (Windows)
-        if: runner.os == 'Windows'
-        shell: msys2 {0}
-        run: |
-          cmake -B build/debug -G Ninja \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DPORTABLE_BUILD=ON &
-          cmake -B build/release -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DPORTABLE_BUILD=ON &
-          wait
+            - name: Configure CMake (Windows)
+              if: runner.os == 'Windows'
+              shell: msys2 {0}
+              run: |
+                  cmake -B build/debug -G Ninja \
+                    -DCMAKE_BUILD_TYPE=Debug \
+                    -DPORTABLE_BUILD=ON &
+                  cmake -B build/release -G Ninja \
+                    -DCMAKE_BUILD_TYPE=Release \
+                    -DPORTABLE_BUILD=ON &
+                  wait
 
-      # Build Debug & Release in parallel
-      - name: Build (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          cmake --build build/debug --parallel &
-          cmake --build build/release --parallel &
-          wait
+            # Build Debug & Release in parallel
+            - name: Build (Linux)
+              if: runner.os == 'Linux'
+              run: |
+                  cmake --build build/debug --parallel &
+                  cmake --build build/release --parallel &
+                  wait
 
-      - name: Build (Windows)
-        if: runner.os == 'Windows'
-        shell: msys2 {0}
-        run: |
-          cmake --build build/debug --parallel &
-          cmake --build build/release --parallel &
-          wait
+            - name: Build (Windows)
+              if: runner.os == 'Windows'
+              shell: msys2 {0}
+              run: |
+                  cmake --build build/debug --parallel &
+                  cmake --build build/release --parallel &
+                  wait
 
-      # Run tests (sequential to avoid resource contention)
-      - name: Run tests (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          echo "=== Debug tests ==="
-          ctest --test-dir build/debug --output-on-failure --parallel $(nproc)
-          echo "=== Release tests ==="
-          ctest --test-dir build/release --output-on-failure --parallel $(nproc)
+            # Run tests (sequential to avoid resource contention)
+            - name: Run tests (Linux)
+              if: runner.os == 'Linux'
+              run: |
+                  echo "=== Debug tests ==="
+                  ctest --test-dir build/debug --output-on-failure --parallel $(nproc)
+                  echo "=== Release tests ==="
+                  ctest --test-dir build/release --output-on-failure --parallel $(nproc)
 
-      - name: Run tests (Windows)
-        if: runner.os == 'Windows'
-        shell: msys2 {0}
-        run: |
-          echo "=== Debug tests ==="
-          ctest --test-dir build/debug --output-on-failure
-          echo "=== Release tests ==="
-          ctest --test-dir build/release --output-on-failure
+            - name: Run tests (Windows)
+              if: runner.os == 'Windows'
+              shell: msys2 {0}
+              run: |
+                  echo "=== Debug tests ==="
+                  ctest --test-dir build/debug --output-on-failure
+                  echo "=== Release tests ==="
+                  ctest --test-dir build/release --output-on-failure

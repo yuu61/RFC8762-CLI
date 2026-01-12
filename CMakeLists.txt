@@ -2,10 +2,10 @@
 cmake_minimum_required(VERSION 3.16)
 project(RFC8762-CLI VERSION 1.0.0 LANGUAGES C)
 
-# C standard settings
+# C standard settings (gnu17 = C17 + GNU extensions)
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
-set(CMAKE_C_EXTENSIONS OFF)
+set(CMAKE_C_EXTENSIONS ON)
 
 # Default build type to Release if not specified
 if(NOT CMAKE_BUILD_TYPE)
@@ -26,6 +26,17 @@ set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release")
 option(PORTABLE_BUILD "Build portable binary for distribution" OFF)
 option(ENABLE_LTO "Enable Link-Time Optimization (increases build time and memory usage)" ON)
 option(ENABLE_REFLECTOR_DEBUG_LOG "Enable verbose reflector debug logging" OFF)
+
+# Profile-Guided Optimization (PGO) options
+# Usage: 1) cmake -DENABLE_PGO_GENERATE=ON .. && make && ./sender (run workload)
+#        2) cmake -DENABLE_PGO_USE=ON .. && make
+# IMPORTANT: Profile generation and profile use MUST use the same compiler version.
+#            Upgrading the compiler between steps will cause errors or suboptimal code.
+option(ENABLE_PGO_GENERATE "Generate profile data for PGO (step 1)" OFF)
+option(ENABLE_PGO_USE "Use profile data for optimization (step 2)" OFF)
+
+# Graphite polyhedral optimization (experimental, requires GCC built with ISL)
+option(ENABLE_GRAPHITE "Enable Graphite polyhedral loop optimization (experimental)" OFF)
 
 # Architecture detection and optimization flags
 set(ARCH_FLAGS "")
@@ -55,13 +66,54 @@ add_compile_options(-Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wformat=2)
 add_compile_options($<$<CONFIG:Debug>:-g> $<$<CONFIG:Debug>:-O0>)
 # Release build: Maximum optimization
 add_compile_options(
+    # Core optimization
     $<$<CONFIG:Release>:-O3>                       # Maximum optimization level
     $<$<CONFIG:Release>:-funroll-loops>            # Unroll loops
     $<$<CONFIG:Release>:-fomit-frame-pointer>      # Omit frame pointer
     $<$<CONFIG:Release>:-finline-functions>        # Inline functions
+    # Section optimization
     $<$<CONFIG:Release>:-ffunction-sections>       # Place each function in its own section
     $<$<CONFIG:Release>:-fdata-sections>           # Place each data in its own section
+    # Interprocedural optimization
     $<$<CONFIG:Release>:-fipa-pta>                 # Interprocedural pointer analysis
+    # Loop optimization
+    $<$<CONFIG:Release>:-ftree-loop-distribution>  # Loop distribution optimization
+    $<$<CONFIG:Release>:-ftree-loop-distribute-patterns> # Convert loops to memset/memcpy calls
+    $<$<CONFIG:Release>:-ftree-loop-im>            # Loop invariant motion
+    $<$<CONFIG:Release>:-ftree-loop-ivcanon>       # Canonical induction variables
+    $<$<CONFIG:Release>:-fivopts>                  # Induction variable optimization
+    $<$<CONFIG:Release>:-fprefetch-loop-arrays>    # Generate memory prefetch instructions
+    $<$<CONFIG:Release>:-fvariable-expansion-in-unroller> # Variable expansion in loop unrolling
+    # Register and scheduling optimization
+    # NOTE: These flags are architecture-specific and most effective on x86_64/amd64.
+    # They increase compilation time but can improve performance for tight loops.
+    $<$<CONFIG:Release>:-fweb>                     # Web construction for register allocation
+    $<$<CONFIG:Release>:-frename-registers>        # Rename registers to avoid false dependencies
+    $<$<CONFIG:Release>:-fschedule-insns>          # Instruction scheduling before register allocation
+    $<$<CONFIG:Release>:-fschedule-insns2>         # Instruction scheduling after register allocation
+    $<$<CONFIG:Release>:-fsched-pressure>          # Schedule with register pressure
+    $<$<CONFIG:Release>:-fschedule-fusion>         # Group similar instructions for execution efficiency
+    $<$<CONFIG:Release>:-fmodulo-sched>            # Modulo scheduling for loops (x86_64 optimized)
+    $<$<CONFIG:Release>:-fmodulo-sched-allow-regmoves> # Allow register moves in modulo scheduling
+    # Superblock optimization
+    $<$<CONFIG:Release>:-ftracer>                  # Tail duplication to form superblocks
+    # Global common subexpression elimination
+    $<$<CONFIG:Release>:-fgcse-sm>                 # Store motion after GCSE
+    $<$<CONFIG:Release>:-fgcse-las>                # Load after store optimization
+    # Table and metadata reduction
+    $<$<CONFIG:Release>:-fno-unwind-tables>        # Remove unwind tables
+    $<$<CONFIG:Release>:-fno-asynchronous-unwind-tables> # Remove async unwind tables
+    $<$<CONFIG:Release>:-fno-ident>                # Remove .ident directives
+    # Constant and data optimization
+    $<$<CONFIG:Release>:-fmerge-all-constants>     # Merge identical constants
+    # Floating point optimization (validated for STAMP/NTP timestamps)
+    # NOTE: These flags have been evaluated and confirmed not to degrade RFC 8762 STAMP / NTP
+    # timestamp precision. For strictly conservative IEEE semantics, override in your build.
+    $<$<CONFIG:Release>:-fno-math-errno>           # Skip errno setting in math functions
+    $<$<CONFIG:Release>:-fno-trapping-math>        # Assume no floating-point traps
+    $<$<CONFIG:Release>:-fno-signed-zeros>         # Ignore sign of zero
+    # Symbol visibility
+    $<$<CONFIG:Release>:-fvisibility=hidden>       # Hide symbols by default
 )
 # Linux/ELF-specific optimizations
 if(UNIX AND NOT APPLE)
@@ -73,6 +125,36 @@ endif()
 # Link-time optimization (optional, controlled by ENABLE_LTO)
 if(ENABLE_LTO)
     add_compile_options($<$<CONFIG:Release>:-flto>)
+endif()
+# Profile-Guided Optimization (PGO)
+if(ENABLE_PGO_GENERATE)
+    add_compile_options($<$<CONFIG:Release>:-fprofile-generate>)
+    add_link_options($<$<CONFIG:Release>:-fprofile-generate>)
+    message(STATUS "PGO: Profile generation enabled - run the binary to generate profile data")
+elseif(ENABLE_PGO_USE)
+    add_compile_options(
+        $<$<CONFIG:Release>:-fprofile-use>
+        $<$<CONFIG:Release>:-fprofile-correction>
+    )
+    add_link_options($<$<CONFIG:Release>:-fprofile-use>)
+    message(STATUS "PGO: Using profile data for optimization")
+endif()
+# Graphite polyhedral optimization (experimental)
+# Note: -floop-parallelize-all は OpenMP が必要なため削除
+# Note: Graphite requires GCC to be built with ISL (Integer Set Library) support
+if(ENABLE_GRAPHITE)
+    include(CheckCCompilerFlag)
+    check_c_compiler_flag("-floop-nest-optimize" HAVE_GRAPHITE_SUPPORT)
+    if(HAVE_GRAPHITE_SUPPORT)
+        add_compile_options(
+            $<$<CONFIG:Release>:-floop-nest-optimize>      # Polyhedral loop nest optimization
+            $<$<CONFIG:Release>:-fgraphite-identity>       # Enable Graphite identity transform
+        )
+        message(STATUS "Graphite: Polyhedral optimization enabled (experimental)")
+    else()
+        message(WARNING "Graphite: ISL support not found in compiler. Graphite optimization disabled. "
+                        "To enable, rebuild GCC with --with-isl.")
+    endif()
 endif()
 # Architecture-specific flags (Release build only for performance)
 # Debug builds use -O0 -g for better debugging experience
@@ -145,4 +227,8 @@ message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "C Compiler: ${CMAKE_C_COMPILER}")
 message(STATUS "System processor: ${CMAKE_SYSTEM_PROCESSOR}")
 message(STATUS "Architecture flags: ${ARCH_FLAGS}")
+message(STATUS "LTO enabled: ${ENABLE_LTO}")
+message(STATUS "PGO generate: ${ENABLE_PGO_GENERATE}")
+message(STATUS "PGO use: ${ENABLE_PGO_USE}")
+message(STATUS "Graphite enabled: ${ENABLE_GRAPHITE}")
 message(STATUS "Platform libraries: ${PLATFORM_LIBS}")

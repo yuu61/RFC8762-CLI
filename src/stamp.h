@@ -60,8 +60,23 @@ typedef int SOCKET;
 
 // コントロールメッセージバッファサイズ
 // WSA_CMSG_SPACE/CMSG_SPACE マクロはMinGW環境で符号変換警告を出すため、
-// 固定サイズを使用（TTL/HopLimit用intとtimespec両方に十分なサイズ）
-#define STAMP_CMSG_BUFSIZE 64
+// 固定サイズを使用。128バイトはSO_TIMESTAMPING（3つのtimespec = 24バイト）、
+// TTL/HopLimit用int、および制御メッセージヘッダを格納するのに十分なサイズ。
+#define STAMP_CMSG_BUFSIZE 128
+
+// Linux: SO_BUSY_POLLの設定値（マイクロ秒）
+// デフォルトでは0（無効）とし、高負荷となるビジーポーリングは
+// 高度なチューニングオプションとして明示的に有効化することを推奨。
+// 必要に応じて、コンパイル時に -DSTAMP_BUSY_POLL_USEC=50 などで上書き可能。
+#ifndef STAMP_BUSY_POLL_USEC
+#define STAMP_BUSY_POLL_USEC 0
+#endif
+
+// Linux: SO_TIMESTAMPINGフラグ（カーネルタイムスタンプ用）
+#ifdef __linux__
+#include <linux/net_tstamp.h>
+#include <linux/errqueue.h>
+#endif
 
 // アドレス長のキャスト（connect/bind等のソケット関数用）
 // Windows: int を期待、POSIX: socklen_t を期待
@@ -106,7 +121,37 @@ typedef int SOCKET;
 #ifdef _WIN32
 #define WINDOWS_TO_NTP_OFFSET 11644473600ULL
 #define WINDOWS_TICKS_PER_SEC 10000000ULL
+// FILETIME妥当性チェック用閾値: 2000-01-01 00:00:00 UTC
+// (1601年1月1日からの100ナノ秒単位のティック数)
+#define WINDOWS_FILETIME_Y2K_THRESHOLD 125911584000000000ULL
+
+// Windows: SIO_TIMESTAMPING サポート (Windows 10 1903以降)
+// MinGW/MSYS2では定義されていない可能性があるため手動で定義
+#include <mstcpip.h>
+
+#ifndef SIO_TIMESTAMPING
+#define SIO_TIMESTAMPING _WSAIOW(IOC_VENDOR, 235)
 #endif
+
+#ifndef SO_TIMESTAMP
+#define SO_TIMESTAMP 0x300A
+#endif
+
+// TIMESTAMPING_CONFIG構造体（MinGWで未定義の場合）
+#ifndef TIMESTAMPING_FLAG_RX
+#define TIMESTAMPING_FLAG_RX 0x1
+#define TIMESTAMPING_FLAG_TX 0x2
+
+typedef struct _TIMESTAMPING_CONFIG {
+    ULONG Flags;
+    USHORT TxTimestampsBuffered;
+} TIMESTAMPING_CONFIG, *PTIMESTAMPING_CONFIG;
+
+// 受信タイムスタンプ用の制御メッセージ
+#define SO_TIMESTAMP_ID 0x300B
+#endif
+
+#endif // _WIN32
 
 // 構造体のパディングなしパッキング (GCC/Clang属性)
 #define PACKED __attribute__((packed))
@@ -151,13 +196,9 @@ struct stamp_reflector_packet
  * @param frac 小数部分（ネットワークバイトオーダー）
  * @return 成功時0、エラー時-1
  */
+__attribute__((nonnull(1, 2)))
 static inline int get_ntp_timestamp(uint32_t *sec, uint32_t *frac)
 {
-    if (!sec || !frac)
-    {
-        return -1;
-    }
-
 #ifdef _WIN32
     // Windows: GetSystemTimeAsFileTime を使用
     FILETIME ft;
@@ -203,6 +244,7 @@ static inline int get_ntp_timestamp(uint32_t *sec, uint32_t *frac)
  * @param frac 小数部分（ネットワークバイトオーダー）
  * @return UNIX時刻（秒）
  */
+__attribute__((pure))
 static inline double ntp_to_double(uint32_t sec, uint32_t frac)
 {
     uint32_t s = ntohl(sec);
@@ -211,16 +253,17 @@ static inline double ntp_to_double(uint32_t sec, uint32_t frac)
 }
 
 /**
- * STAMPパケットの妥当性チェック
+ * STAMPパケットの妥当性チェック（サイズのみ検証）
+ * @param packet パケットデータへのポインタ（現在は未使用、将来の拡張用）
+ * @param size パケットサイズ（バイト）
  * @return 妥当な場合1、不正な場合0
+ * @note 現在の実装ではサイズのみ検証。packetパラメータは将来MBZフィールド等の
+ *       内容検証を追加する際のAPI互換性のために残している。
  */
-static inline int validate_stamp_packet(const void *packet, int size)
+static inline int validate_stamp_packet(const void *packet __attribute__((unused)),
+                                        int size)
 {
-    if (!packet || size < STAMP_BASE_PACKET_SIZE)
-    {
-        return 0;
-    }
-    return 1;
+    return size >= STAMP_BASE_PACKET_SIZE;
 }
 
 // =============================================================================
@@ -344,15 +387,11 @@ static inline void stamp_signal_handler(int signal)
  * @param port パース結果を格納するポインタ
  * @return 成功時0、エラー時-1
  */
+__attribute__((nonnull(1, 2)))
 static inline int parse_port(const char *arg, uint16_t *port)
 {
     char *end = NULL;
     unsigned long value;
-
-    if (!arg || !port)
-    {
-        return -1;
-    }
 
     // 空文字列のチェック
     if (*arg == '\0')
@@ -399,6 +438,100 @@ static inline bool init_wsa_recvmsg(SOCKET sockfd, LPFN_WSARECVMSG *wsa_recvmsg)
     }
     return true;
 }
+
+/**
+ * Windows: SIO_TIMESTAMPINGでカーネルタイムスタンプを有効化
+ * @param sockfd ソケットディスクリプタ
+ * @return 成功時true、失敗時false
+ *
+ * Windows 10 1903以降で利用可能。失敗してもユーザースペースタイムスタンプに
+ * フォールバックするため、戻り値のチェックは必須ではない。
+ */
+static inline bool enable_kernel_timestamping_windows(SOCKET sockfd)
+{
+    TIMESTAMPING_CONFIG ts_config = {0};
+    ts_config.Flags = TIMESTAMPING_FLAG_RX; // 受信タイムスタンプを有効化
+    ts_config.TxTimestampsBuffered = 0;
+    DWORD bytes_returned = 0;
+
+    if (WSAIoctl(sockfd, SIO_TIMESTAMPING,
+                 &ts_config, sizeof(ts_config),
+                 NULL, 0, &bytes_returned, NULL, NULL) == 0)
+    {
+        // 診断メッセージはstderrに出力（stdoutはアプリケーション出力用）
+        fprintf(stderr, "Kernel timestamping enabled (SIO_TIMESTAMPING)\n");
+        return true;
+    }
+    else
+    {
+        // Windows 10 1903未満では失敗する可能性がある
+        // フォールバック: ユーザースペースタイムスタンプを使用
+        fprintf(stderr, "Warning: SIO_TIMESTAMPING not available (error %d); using userspace timestamps\n",
+                WSAGetLastError());
+        return false;
+    }
+}
+
+/**
+ * Windows: 制御メッセージからカーネルタイムスタンプを抽出
+ * @param msg WSARecvMsg()で受信したWSAMSG構造体へのポインタ（NULLは未定義動作）
+ * @param ntp_sec NTP秒部分を格納するポインタ（NULLは未定義動作）
+ * @param ntp_frac NTP小数部分を格納するポインタ（NULLは未定義動作）
+ * @return タイムスタンプが見つかった場合true、そうでない場合false
+ *
+ * Windows 10 1903以降でSIO_TIMESTAMPINGが有効な場合、
+ * SO_TIMESTAMP制御メッセージにFILETIME形式のタイムスタンプが含まれる。
+ */
+__attribute__((nonnull(1, 2, 3)))
+static inline bool extract_kernel_timestamp_windows(WSAMSG *msg,
+                                                     uint32_t *ntp_sec,
+                                                     uint32_t *ntp_frac)
+{
+    // MinGW WSA_CMSG_NXTHDR マクロの符号変換警告を抑制
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+    for (WSACMSGHDR *cmsg = WSA_CMSG_FIRSTHDR(msg); cmsg != NULL; cmsg = WSA_CMSG_NXTHDR(msg, cmsg))
+    {
+        // SO_TIMESTAMP または SO_TIMESTAMP_ID: カーネルタイムスタンプ
+        // SIO_TIMESTAMPINGで有効化した場合、SO_TIMESTAMP_IDで返される
+        if (cmsg->cmsg_level == SOL_SOCKET &&
+            (cmsg->cmsg_type == SO_TIMESTAMP || cmsg->cmsg_type == SO_TIMESTAMP_ID))
+        {
+            // FILETIME形式（Windows epoch: 1601-01-01からの100ナノ秒単位）
+            // cmsg_lenでデータサイズを検証（アンダーフロー防止）
+            size_t header_len = WSA_CMSGDATA_ALIGN(sizeof(WSACMSGHDR));
+            if (cmsg->cmsg_len < header_len)
+            {
+                // ヘッダ長より短い場合は不正なメッセージとしてスキップ
+                continue;
+            }
+            size_t data_len = cmsg->cmsg_len - header_len;
+            if (data_len >= sizeof(UINT64))
+            {
+                UINT64 filetime;
+                memcpy(&filetime, WSA_CMSG_DATA(cmsg), sizeof(filetime));
+
+                // 妥当性チェック: 2000年以降のタイムスタンプか確認
+                if (filetime >= WINDOWS_FILETIME_Y2K_THRESHOLD)
+                {
+                    // NTPタイムスタンプに変換
+                    uint64_t unix_time = (filetime / WINDOWS_TICKS_PER_SEC) - WINDOWS_TO_NTP_OFFSET;
+                    uint64_t frac_100ns = filetime % WINDOWS_TICKS_PER_SEC;
+
+                    *ntp_sec = htonl((uint32_t)(unix_time + NTP_OFFSET));
+                    *ntp_frac = htonl(WINDOWS_100NS_TO_NTP_FRAC(frac_100ns));
+                    return true;
+                }
+            }
+        }
+    }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+    return false;
+}
 #endif
 
 #ifndef _WIN32
@@ -427,6 +560,115 @@ static inline void timeval_to_ntp(const struct timeval *tv,
     *ntp_sec = htonl((uint32_t)((unsigned long)tv->tv_sec + NTP_OFFSET));
     *ntp_frac = htonl(USEC_TO_NTP_FRAC(tv->tv_usec));
 }
+
+/**
+ * Linux: 制御メッセージからカーネルタイムスタンプを抽出
+ * @param msg recvmsg()で受信したmsghdr構造体へのポインタ（NULLは未定義動作）
+ * @param ntp_sec NTP秒部分を格納するポインタ（NULLは未定義動作）
+ * @param ntp_frac NTP小数部分を格納するポインタ（NULLは未定義動作）
+ * @return タイムスタンプが見つかった場合true、そうでない場合false
+ *
+ * 優先順位:
+ *   1. SCM_TIMESTAMPING (SO_TIMESTAMPING) - 最も高精度
+ *   2. SCM_TIMESTAMPNS (SO_TIMESTAMPNS) - ナノ秒精度
+ *   3. SCM_TIMESTAMP (SO_TIMESTAMP) - マイクロ秒精度
+ */
+__attribute__((nonnull(1, 2, 3)))
+static inline bool extract_kernel_timestamp_linux(struct msghdr *msg,
+                                                   uint32_t *ntp_sec __attribute__((unused)),
+                                                   uint32_t *ntp_frac __attribute__((unused)))
+{
+    struct cmsghdr *cmsg;
+    for (cmsg = CMSG_FIRSTHDR(msg); cmsg != NULL; cmsg = CMSG_NXTHDR(msg, cmsg))
+    {
+#ifdef __linux__
+#ifdef SCM_TIMESTAMPING
+        // SO_TIMESTAMPING: より高精度なカーネルタイムスタンプ
+        if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMPING)
+        {
+            // cmsg_len を検証して、必要な timespec 配列が格納されていることを確認する
+            size_t required_len = CMSG_LEN(3 * sizeof(struct timespec));
+            if ((size_t)cmsg->cmsg_len < required_len)
+            {
+                // 不完全な制御メッセージは無視
+                continue;
+            }
+
+            // struct scm_timestamping contains 3 timespec: sw, hw, raw
+            struct timespec *ts = (struct timespec *)CMSG_DATA(cmsg);
+            // 可能であれば非ゼロかつ有効なタイムスタンプを優先して選択するが、
+            // (0,0) も有効なタイムスタンプ値であるため、すべてゼロでも ts[0] を使用する
+            // tv_nsec は 0 <= tv_nsec < 1000000000 の範囲でなければならない（POSIX準拠）
+            struct timespec *selected = NULL;
+            for (int i = 0; i < 3; i++)
+            {
+                // tv_nsec が有効範囲外の場合はスキップ（破損したタイムスタンプ）
+                if (ts[i].tv_nsec < 0 || ts[i].tv_nsec >= 1000000000L)
+                {
+                    continue;
+                }
+                // 非ゼロのタイムスタンプを優先
+                if (ts[i].tv_sec != 0 || ts[i].tv_nsec != 0)
+                {
+                    selected = &ts[i];
+                    break;
+                }
+                // 最初の有効な (0,0) タイムスタンプを記録
+                if (selected == NULL)
+                {
+                    selected = &ts[i];
+                }
+            }
+            // 有効なタイムスタンプが見つからない場合は次の制御メッセージへ
+            if (selected == NULL)
+            {
+                continue;
+            }
+
+            timespec_to_ntp(selected, ntp_sec, ntp_frac);
+            return true;
+        }
+#endif
+#endif
+#ifdef SCM_TIMESTAMPNS
+        if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMPNS)
+        {
+            // cmsg_len を検証して、timespec が格納されていることを確認する
+            if ((size_t)cmsg->cmsg_len < CMSG_LEN(sizeof(struct timespec)))
+            {
+                continue;
+            }
+            struct timespec *ts = (struct timespec *)CMSG_DATA(cmsg);
+            // tv_nsec が有効範囲外の場合はスキップ（破損したタイムスタンプ）
+            if (ts->tv_nsec < 0 || ts->tv_nsec >= 1000000000L)
+            {
+                continue;
+            }
+            timespec_to_ntp(ts, ntp_sec, ntp_frac);
+            return true;
+        }
+#endif
+#ifdef SCM_TIMESTAMP
+        if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMP)
+        {
+            // cmsg_len を検証して、timeval が格納されていることを確認する
+            if ((size_t)cmsg->cmsg_len < CMSG_LEN(sizeof(struct timeval)))
+            {
+                continue;
+            }
+            struct timeval *tv = (struct timeval *)CMSG_DATA(cmsg);
+            // tv_usec が有効範囲外の場合はスキップ（破損したタイムスタンプ）
+            if (tv->tv_usec < 0 || tv->tv_usec >= 1000000L)
+            {
+                continue;
+            }
+            timeval_to_ntp(tv, ntp_sec, ntp_frac);
+            return true;
+        }
+#endif
+    }
+    return false;
+}
 #endif
 
 // =============================================================================
@@ -438,6 +680,7 @@ static inline void timeval_to_ntp(const struct timeval *tv,
  * @param family アドレスファミリ (AF_INET or AF_INET6)
  * @return 構造体サイズ
  */
+__attribute__((const))
 static inline socklen_t get_sockaddr_len(int family)
 {
     return (family == AF_INET6) ? (socklen_t)sizeof(struct sockaddr_in6)
@@ -470,10 +713,11 @@ static inline uint16_t sockaddr_get_port(const struct sockaddr_storage *addr)
  * sockaddr_storageをアドレス文字列に変換
  * @return 成功時buf、エラー時NULL
  */
+__attribute__((nonnull(1, 2)))
 static inline const char *sockaddr_to_string(const struct sockaddr_storage *addr,
                                              char *buf, size_t buflen)
 {
-    if (!addr || !buf || buflen == 0)
+    if (buflen == 0)
         return NULL;
 
     socklen_t addrlen = get_sockaddr_len(addr->ss_family);
@@ -586,14 +830,12 @@ static inline int resolve_address_list(const char *host, uint16_t port, int af_h
  * @param af_hint AF_UNSPEC=自動, AF_INET, AF_INET6
  * @return 成功時0、エラー時-1
  */
+__attribute__((nonnull(1, 4, 5)))
 static inline int resolve_address(const char *host, uint16_t port, int af_hint,
                                   struct sockaddr_storage *out_addr,
                                   socklen_t *out_addrlen)
 {
     struct addrinfo *result, *rp;
-
-    if (!host || !out_addr || !out_addrlen)
-        return -1;
 
     if (resolve_address_list(host, port, af_hint, &result) != 0)
     {

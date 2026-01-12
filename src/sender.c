@@ -7,6 +7,15 @@
 #include <mswsock.h>
 #endif
 
+// 分岐予測ヒント（GNU拡張、非対応コンパイラではno-op）
+#if defined(__GNUC__) || defined(__clang__)
+#define likely(x)   __builtin_expect(!!(x), 1)
+#define unlikely(x) __builtin_expect(!!(x), 0)
+#else
+#define likely(x)   (x)
+#define unlikely(x) (x)
+#endif
+
 #define PORT STAMP_PORT       // STAMP標準ポート番号
 #define SERVER_IP "127.0.0.1" // デフォルトのサーバーIPアドレス（ローカルホスト）
 #define SEND_INTERVAL_SEC 1   // 送信間隔（秒）
@@ -115,6 +124,7 @@ static SOCKET init_socket(const char *host, uint16_t port,
         }
 
         init_wsa_recvmsg(sockfd, &g_wsa_recvmsg);
+        enable_kernel_timestamping_windows(sockfd);
 #else
         struct timeval tv;
         tv.tv_sec = SOCKET_TIMEOUT_SEC;
@@ -127,6 +137,7 @@ static SOCKET init_socket(const char *host, uint16_t port,
             return INVALID_SOCKET;
         }
 
+        // カーネルタイムスタンプの有効化 (SO_TIMESTAMPNS: ナノ秒精度)
 #ifdef SO_TIMESTAMPNS
         {
             int opt = 1;
@@ -138,6 +149,26 @@ static SOCKET init_socket(const char *host, uint16_t port,
             (void)setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMP, &opt, sizeof(opt));
         }
 #endif
+
+#ifdef __linux__
+        // SO_BUSY_POLL: ビジーポーリングでレイテンシ削減
+#ifdef SO_BUSY_POLL
+        {
+            int busy_poll = STAMP_BUSY_POLL_USEC;
+            (void)setsockopt(sockfd, SOL_SOCKET, SO_BUSY_POLL, &busy_poll, sizeof(busy_poll));
+        }
+#endif
+
+        // SO_TIMESTAMPING: カーネルレベルの送受信タイムスタンプ
+#ifdef SO_TIMESTAMPING
+        {
+            int ts_flags = SOF_TIMESTAMPING_RX_SOFTWARE |
+                           SOF_TIMESTAMPING_TX_SOFTWARE |
+                           SOF_TIMESTAMPING_SOFTWARE;
+            (void)setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMPING, &ts_flags, sizeof(ts_flags));
+        }
+#endif
+#endif // __linux__
 #endif
 
         if (connect(sockfd, rp->ai_addr, ADDRLEN_CAST(rp->ai_addrlen)) < 0)
@@ -202,7 +233,7 @@ static int send_stamp_packet(SOCKET sockfd, uint32_t seq,
     tx_packet->seq_num = htonl(seq);
     tx_packet->error_estimate = htons(ERROR_ESTIMATE_DEFAULT);
     // T1: 送信時刻の取得
-    if (get_ntp_timestamp(&t1_sec, &t1_frac) != 0)
+    if (unlikely(get_ntp_timestamp(&t1_sec, &t1_frac) != 0))
     {
         fprintf(stderr, "Failed to get T1 timestamp\n");
         return -1;
@@ -211,7 +242,7 @@ static int send_stamp_packet(SOCKET sockfd, uint32_t seq,
     tx_packet->timestamp_frac = t1_frac;
 
     // パケット送信
-    if (send(sockfd, (const char *)tx_packet, (int)sizeof(*tx_packet), 0) < 0)
+    if (unlikely(send(sockfd, (const char *)tx_packet, (int)sizeof(*tx_packet), 0) < 0))
     {
         PRINT_SOCKET_ERROR("send failed");
         return -1;
@@ -225,9 +256,9 @@ static int send_stamp_packet(SOCKET sockfd, uint32_t seq,
  * カーネルタイムスタンプ付きでパケットを受信
  * @return 受信バイト数、エラー時-1
  */
-static int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len,
-                               struct sockaddr_storage *servaddr, socklen_t *len,
-                               uint32_t *t4_sec, uint32_t *t4_frac)
+static inline int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len,
+                        struct sockaddr_storage *servaddr, socklen_t *len,
+                        uint32_t *t4_sec, uint32_t *t4_frac)
 {
     ssize_t n;
 
@@ -254,8 +285,17 @@ static int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len
             return -1;
         }
 
-        get_ntp_timestamp(t4_sec, t4_frac);
         *len = msg.namelen;
+
+        // カーネルタイムスタンプを抽出（共通関数を使用）
+        bool timestamp_found = extract_kernel_timestamp_windows(&msg, t4_sec, t4_frac);
+
+        // カーネルタイムスタンプが取得できなかった場合はユーザースペースタイムスタンプを使用
+        if (!timestamp_found)
+        {
+            get_ntp_timestamp(t4_sec, t4_frac);
+        }
+
         return (int)bytes;
     }
     else
@@ -271,7 +311,7 @@ static int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len
 #else
     struct msghdr msg;
     struct iovec iov;
-    char control[CMSG_SPACE(sizeof(struct timespec))];
+    char control[STAMP_CMSG_BUFSIZE];
 
     memset(&msg, 0, sizeof(msg));
     iov.iov_base = buffer;
@@ -291,29 +331,8 @@ static int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len
 
     *len = msg.msg_namelen;
 
-    bool timestamp_found = false;
-    struct cmsghdr *cmsg;
-    for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg))
-    {
-#ifdef SCM_TIMESTAMPNS
-        if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMPNS)
-        {
-            struct timespec *ts = (struct timespec *)CMSG_DATA(cmsg);
-            timespec_to_ntp(ts, t4_sec, t4_frac);
-            timestamp_found = true;
-            break;
-        }
-#endif
-#ifdef SCM_TIMESTAMP
-        if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMP)
-        {
-            struct timeval *tv = (struct timeval *)CMSG_DATA(cmsg);
-            timeval_to_ntp(tv, t4_sec, t4_frac);
-            timestamp_found = true;
-            break;
-        }
-#endif
-    }
+    // カーネルタイムスタンプを抽出（共通関数を使用）
+    bool timestamp_found = extract_kernel_timestamp_linux(&msg, t4_sec, t4_frac);
 
     if (!timestamp_found)
     {
@@ -338,7 +357,7 @@ static int receive_and_process_packet(SOCKET sockfd, const struct stamp_sender_p
 
     // パケット受信（カーネルタイムスタンプ付き）
     int n = recv_with_timestamp(sockfd, buffer, sizeof(buffer), &recvaddr, &len, &t4_sec, &t4_frac);
-    if (n < 0)
+    if (unlikely(n < 0))
     {
 #ifdef _WIN32
         if (SOCKET_ERRNO == WSAETIMEDOUT)
@@ -357,7 +376,7 @@ static int receive_and_process_packet(SOCKET sockfd, const struct stamp_sender_p
     }
 
     // パケット検証
-    if (!validate_stamp_packet(buffer, n))
+    if (unlikely(!validate_stamp_packet(buffer, n)))
     {
         fprintf(stderr, "Invalid packet received\n");
         return -1;
@@ -366,7 +385,7 @@ static int receive_and_process_packet(SOCKET sockfd, const struct stamp_sender_p
     memcpy(&rx_packet, buffer, sizeof(rx_packet));
 
     // シーケンス番号の確認
-    if (rx_packet.sender_seq_num != tx_packet->seq_num)
+    if (unlikely(rx_packet.sender_seq_num != tx_packet->seq_num))
     {
         fprintf(stderr, "Sequence number mismatch: expected %" PRIu32 ", got %" PRIu32 "\n",
                 (uint32_t)ntohl(tx_packet->seq_num), (uint32_t)ntohl(rx_packet.sender_seq_num));
