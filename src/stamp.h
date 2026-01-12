@@ -63,6 +63,14 @@ typedef int SOCKET;
 // 固定サイズを使用（TTL/HopLimit用intとtimespec両方に十分なサイズ）
 #define STAMP_CMSG_BUFSIZE 64
 
+// アドレス長のキャスト（connect/bind等のソケット関数用）
+// Windows: int を期待、POSIX: socklen_t を期待
+#ifdef _WIN32
+#define ADDRLEN_CAST(x) ((int)(x))
+#else
+#define ADDRLEN_CAST(x) (x)
+#endif
+
 // ユーティリティ定数
 #define FIREWALL_CMD_BUFSIZE 256    // ファイアウォールコマンドバッファサイズ
 #define SLEEP_CHECK_INTERVAL_MS 100 // スリープ中の割り込みチェック間隔（ミリ秒）

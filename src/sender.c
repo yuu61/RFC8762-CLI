@@ -150,7 +150,7 @@ static SOCKET init_socket(const char *host, uint16_t port,
 #endif
 
         // Connect UDP socket to validate reachability.
-        if (connect(sockfd, rp->ai_addr, (int)rp->ai_addrlen) < 0)
+        if (connect(sockfd, rp->ai_addr, ADDRLEN_CAST(rp->ai_addrlen)) < 0)
         {
             last_err = SOCKET_ERRNO;
             if (rp->ai_addrlen <= sizeof(last_addr))
