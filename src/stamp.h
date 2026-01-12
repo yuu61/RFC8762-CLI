@@ -251,17 +251,15 @@ static inline double ntp_to_double(uint32_t sec, uint32_t frac)
 
 /**
  * STAMPパケットの妥当性チェック（サイズのみ検証）
- * @param packet パケットデータへのポインタ（NULLは未定義動作）
+ * @param packet パケットデータへのポインタ（現在は未使用、将来の拡張用）
  * @param size パケットサイズ（バイト）
  * @return 妥当な場合1、不正な場合0
- * @note パケット内容（MBZフィールド等）は検証しない。サイズが
- *       STAMP_BASE_PACKET_SIZE以上であれば妥当と判定する。
- *       現在の実装ではpacketの内容を検査しないため、pure属性は使用しない。
+ * @note 現在の実装ではサイズのみ検証。packetパラメータは将来MBZフィールド等の
+ *       内容検証を追加する際のAPI互換性のために残している。
  */
-__attribute__((nonnull(1)))
-static inline int validate_stamp_packet(const void *packet, int size)
+static inline int validate_stamp_packet(const void *packet __attribute__((unused)),
+                                        int size)
 {
-    (void)packet; // nonnull属性で保証、将来の拡張用に残す
     return size >= STAMP_BASE_PACKET_SIZE;
 }
 
@@ -498,8 +496,14 @@ static inline bool extract_kernel_timestamp_windows(WSAMSG *msg,
             (cmsg->cmsg_type == SO_TIMESTAMP || cmsg->cmsg_type == SO_TIMESTAMP_ID))
         {
             // FILETIME形式（Windows epoch: 1601-01-01からの100ナノ秒単位）
-            // cmsg_lenでデータサイズを検証
-            size_t data_len = cmsg->cmsg_len - WSA_CMSGDATA_ALIGN(sizeof(WSACMSGHDR));
+            // cmsg_lenでデータサイズを検証（アンダーフロー防止）
+            size_t header_len = WSA_CMSGDATA_ALIGN(sizeof(WSACMSGHDR));
+            if (cmsg->cmsg_len < header_len)
+            {
+                // ヘッダ長より短い場合は不正なメッセージとしてスキップ
+                continue;
+            }
+            size_t data_len = cmsg->cmsg_len - header_len;
             if (data_len >= sizeof(UINT64))
             {
                 UINT64 filetime;
@@ -556,9 +560,9 @@ static inline void timeval_to_ntp(const struct timeval *tv,
 
 /**
  * Linux: 制御メッセージからカーネルタイムスタンプを抽出
- * @param msg recvmsg()で受信したmsghdr構造体へのポインタ
- * @param ntp_sec NTP秒部分を格納するポインタ
- * @param ntp_frac NTP小数部分を格納するポインタ
+ * @param msg recvmsg()で受信したmsghdr構造体へのポインタ（NULLは未定義動作）
+ * @param ntp_sec NTP秒部分を格納するポインタ（NULLは未定義動作）
+ * @param ntp_frac NTP小数部分を格納するポインタ（NULLは未定義動作）
  * @return タイムスタンプが見つかった場合true、そうでない場合false
  *
  * 優先順位:
@@ -566,12 +570,14 @@ static inline void timeval_to_ntp(const struct timeval *tv,
  *   2. SCM_TIMESTAMPNS (SO_TIMESTAMPNS) - ナノ秒精度
  *   3. SCM_TIMESTAMP (SO_TIMESTAMP) - マイクロ秒精度
  */
+__attribute__((nonnull(1, 2, 3)))
 static inline bool extract_kernel_timestamp_linux(struct msghdr *msg,
                                                    uint32_t *ntp_sec,
                                                    uint32_t *ntp_frac)
 {
-    if (!msg || !ntp_sec || !ntp_frac)
-        return false;
+    // SCM_* マクロが未定義の環境で未使用パラメータ警告を抑制
+    (void)ntp_sec;
+    (void)ntp_frac;
 
     struct cmsghdr *cmsg;
     for (cmsg = CMSG_FIRSTHDR(msg); cmsg != NULL; cmsg = CMSG_NXTHDR(msg, cmsg))
@@ -611,6 +617,11 @@ static inline bool extract_kernel_timestamp_linux(struct msghdr *msg,
 #ifdef SCM_TIMESTAMPNS
         if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMPNS)
         {
+            // cmsg_len を検証して、timespec が格納されていることを確認する
+            if ((size_t)cmsg->cmsg_len < CMSG_LEN(sizeof(struct timespec)))
+            {
+                continue;
+            }
             struct timespec *ts = (struct timespec *)CMSG_DATA(cmsg);
             timespec_to_ntp(ts, ntp_sec, ntp_frac);
             return true;
@@ -619,6 +630,11 @@ static inline bool extract_kernel_timestamp_linux(struct msghdr *msg,
 #ifdef SCM_TIMESTAMP
         if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMP)
         {
+            // cmsg_len を検証して、timeval が格納されていることを確認する
+            if ((size_t)cmsg->cmsg_len < CMSG_LEN(sizeof(struct timeval)))
+            {
+                continue;
+            }
             struct timeval *tv = (struct timeval *)CMSG_DATA(cmsg);
             timeval_to_ntp(tv, ntp_sec, ntp_frac);
             return true;
