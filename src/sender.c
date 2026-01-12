@@ -150,7 +150,7 @@ static SOCKET init_socket(const char *host, uint16_t port,
 #endif
 
         // Connect UDP socket to validate reachability.
-        if (connect(sockfd, rp->ai_addr, rp->ai_addrlen) < 0)
+        if (connect(sockfd, rp->ai_addr, (int)rp->ai_addrlen) < 0)
         {
             last_err = SOCKET_ERRNO;
             if (rp->ai_addrlen <= sizeof(last_addr))
@@ -253,7 +253,7 @@ static int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len
     {
         WSABUF data_buf;
         WSAMSG msg;
-        char control[WSA_CMSG_SPACE(sizeof(struct timeval))];
+        char control[STAMP_CMSG_BUFSIZE];
         DWORD bytes = 0;
 
         data_buf.buf = (CHAR *)buffer;
@@ -285,7 +285,7 @@ static int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len
         {
             get_ntp_timestamp(t4_sec, t4_frac);
         }
-        return n;
+        return (int)n;
     }
 #else
     struct msghdr msg;

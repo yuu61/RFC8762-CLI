@@ -58,6 +58,11 @@ typedef int SOCKET;
 #define SOCKET_TIMEOUT_SEC 5
 #define SOCKET_TIMEOUT_USEC 0
 
+// コントロールメッセージバッファサイズ
+// WSA_CMSG_SPACE/CMSG_SPACE マクロはMinGW環境で符号変換警告を出すため、
+// 固定サイズを使用（TTL/HopLimit用intとtimespec両方に十分なサイズ）
+#define STAMP_CMSG_BUFSIZE 64
+
 // ユーティリティ定数
 #define FIREWALL_CMD_BUFSIZE 256    // ファイアウォールコマンドバッファサイズ
 #define SLEEP_CHECK_INTERVAL_MS 100 // スリープ中の割り込みチェック間隔（ミリ秒）
@@ -95,7 +100,7 @@ typedef int SOCKET;
 #define WINDOWS_TICKS_PER_SEC 10000000ULL
 #endif
 
-// 構造体のパディングなしパッキング (GCC属性)
+// 構造体のパディングなしパッキング (GCC/Clang属性)
 #define PACKED __attribute__((packed))
 
 // RFC 8762 STAMPパケット構造体 (RFC 4.2.1)
@@ -475,8 +480,14 @@ static inline const char *sockaddr_to_string(const struct sockaddr_storage *addr
         return NULL;
 
     socklen_t addrlen = get_sockaddr_len(addr->ss_family);
+#ifdef _WIN32
+    // Windows: getnameinfo expects DWORD for buffer size
+    if (getnameinfo((const struct sockaddr *)addr, addrlen,
+                    buf, (DWORD)buflen, NULL, 0, NI_NUMERICHOST) != 0)
+#else
     if (getnameinfo((const struct sockaddr *)addr, addrlen,
                     buf, (socklen_t)buflen, NULL, 0, NI_NUMERICHOST) != 0)
+#endif
     {
         return NULL;
     }

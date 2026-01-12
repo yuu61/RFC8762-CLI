@@ -472,7 +472,7 @@ static int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
 
     WSABUF data_buf;
     WSAMSG msg;
-    char control[WSA_CMSG_SPACE(sizeof(int))];
+    char control[STAMP_CMSG_BUFSIZE];
     DWORD bytes = 0;
 
     data_buf.buf = (CHAR *)buffer;
@@ -500,8 +500,16 @@ static int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
     if (ttl)
     {
         WSACMSGHDR *cmsg;
+        // MinGW WSA_CMSG_NXTHDR マクロの符号変換警告を抑制
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
         for (cmsg = WSA_CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = WSA_CMSG_NXTHDR(&msg, cmsg))
         {
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
             // IPv4 TTL
             if (cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_TTL)
             {
