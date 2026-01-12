@@ -27,15 +27,54 @@ STAMPは、ネットワークの性能測定を行うための標準化された
 
 ## 必要な環境
 
-- C コンパイラ (GCC 14以降)
-- C2x 標準サポート
-- CMake 3.16 以上
-- Ninja (ビルドジェネレーター)
+- **コンパイラ**: GCC 14 以降（必須）
+  - ⚠️ MSVCはサポートしていません
+- **C標準**: C2x
+- **ビルドツール**: CMake 3.16 以上、Ninja
 
-### プラットフォーム別の依存関係
+### プラットフォーム別のセットアップ
 
-- **Windows**: Winsock2 (ws2_32.lib, mswsock.lib)
-- **Linux**: librt (リアルタイムライブラリ)
+#### Windows (MSYS2)
+
+WindowsではMSYS2環境が必要です。
+
+```bash
+# 1. MSYS2をインストール: https://www.msys2.org/
+# 2. MSYS2 UCRT64ターミナルを開いて以下を実行:
+pacman -Syu
+# 再起動後、再度UCRT64ターミナルを開いて以下を実行:
+pacman -Syu
+
+pacman -S --needed mingw-w64-ucrt-x86_64-toolchain
+
+# 3. GCCバージョン確認（14以上であること）
+gcc --version
+```
+
+```pwsh
+# 4. CMakeとNinjaのインストール
+winget install Kitware.CMake Ninja-build.Ninja
+```
+
+#### Linux (Debian/Ubuntu)
+
+```bash
+# GCC 14のインストール（Ubuntu 24.04以降、またはPPA使用）
+sudo apt update
+sudo apt install gcc-14 cmake ninja-build
+
+# デフォルトコンパイラに設定
+
+# 既にインストールされている任意のバージョンを選択してください
+# sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 13
+
+sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 14
+```
+
+### ランタイム依存関係
+
+- **Windows**: Winsock2 (ws2_32.lib, mswsock.lib) - システム標準
+- **Linux**: librt (リアルタイムライブラリ) - CMakeが自動リンク
 - **その他 UNIX 系**: 標準のソケットライブラリ
 
 ## ビルド方法
@@ -224,7 +263,7 @@ RFC8762/
 
 **ビルドエラー: `winsock2.h: No such file or directory`**
 
-- MinGW-w64またはMSVCを使用してください
+- MSYS2環境でビルドしてください（「必要な環境」セクション参照）
 
 **ビルドエラー: `undefined reference to clock_gettime`**
 
