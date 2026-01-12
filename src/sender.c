@@ -7,9 +7,14 @@
 #include <mswsock.h>
 #endif
 
-// 分岐予測ヒント（GNU拡張）
-#define likely(x) __builtin_expect(!!(x), 1)
+// 分岐予測ヒント（GNU拡張、非対応コンパイラではno-op）
+#if defined(__GNUC__) || defined(__clang__)
+#define likely(x)   __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)
+#else
+#define likely(x)   (x)
+#define unlikely(x) (x)
+#endif
 
 #define PORT STAMP_PORT       // STAMP標準ポート番号
 #define SERVER_IP "127.0.0.1" // デフォルトのサーバーIPアドレス（ローカルホスト）
@@ -119,29 +124,7 @@ static SOCKET init_socket(const char *host, uint16_t port,
         }
 
         init_wsa_recvmsg(sockfd, &g_wsa_recvmsg);
-
-        // Windows: SIO_TIMESTAMPINGでカーネルタイムスタンプを有効化
-        // Windows 10 1903以降で利用可能
-        {
-            TIMESTAMPING_CONFIG ts_config = {0};
-            ts_config.Flags = TIMESTAMPING_FLAG_RX; // 受信タイムスタンプを有効化
-            ts_config.TxTimestampsBuffered = 0;
-            DWORD bytes_returned = 0;
-
-            if (WSAIoctl(sockfd, SIO_TIMESTAMPING,
-                         &ts_config, sizeof(ts_config),
-                         NULL, 0, &bytes_returned, NULL, NULL) == 0)
-            {
-                printf("Kernel timestamping enabled (SIO_TIMESTAMPING)\n");
-            }
-            else
-            {
-                // Windows 10 1903未満では失敗する可能性がある
-                // フォールバック: ユーザースペースタイムスタンプを使用
-                fprintf(stderr, "Warning: SIO_TIMESTAMPING not available (error %d); using userspace timestamps\n",
-                        WSAGetLastError());
-            }
-        }
+        enable_kernel_timestamping_windows(sockfd);
 #else
         struct timeval tv;
         tv.tv_sec = SOCKET_TIMEOUT_SEC;
@@ -273,9 +256,9 @@ static int send_stamp_packet(SOCKET sockfd, uint32_t seq,
  * カーネルタイムスタンプ付きでパケットを受信
  * @return 受信バイト数、エラー時-1
  *
- * 注: この関数はホットパスであり、インライン化によりオーバーヘッドを削減する。
+ * 注: この関数はホットパスであり、hot属性によりキャッシュ最適化を促進する。
  */
-static inline __attribute__((always_inline, hot))
+static inline __attribute__((hot))
 int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len,
                         struct sockaddr_storage *servaddr, socklen_t *len,
                         uint32_t *t4_sec, uint32_t *t4_frac)

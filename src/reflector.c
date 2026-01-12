@@ -7,9 +7,14 @@
 #include <mswsock.h>
 #endif
 
-// 分岐予測ヒント（GNU拡張）
-#define likely(x) __builtin_expect(!!(x), 1)
+// 分岐予測ヒント（GNU拡張、非対応コンパイラではno-op）
+#if defined(__GNUC__) || defined(__clang__)
+#define likely(x)   __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)
+#else
+#define likely(x)   (x)
+#define unlikely(x) (x)
+#endif
 
 #define PORT STAMP_PORT // STAMP標準ポート番号
 
@@ -249,28 +254,7 @@ static SOCKET init_reflector_socket(uint16_t port, int af_hint, int *out_family)
                        (const char *)&timeout_ms, sizeof(timeout_ms));
         }
 
-        // Windows: SIO_TIMESTAMPINGでカーネルタイムスタンプを有効化
-        // Windows 10 1903以降で利用可能
-        {
-            TIMESTAMPING_CONFIG ts_config = {0};
-            ts_config.Flags = TIMESTAMPING_FLAG_RX; // 受信タイムスタンプを有効化
-            ts_config.TxTimestampsBuffered = 0;
-            DWORD bytes_returned = 0;
-
-            if (WSAIoctl(sockfd, SIO_TIMESTAMPING,
-                         &ts_config, sizeof(ts_config),
-                         NULL, 0, &bytes_returned, NULL, NULL) == 0)
-            {
-                printf("Kernel timestamping enabled (SIO_TIMESTAMPING)\n");
-            }
-            else
-            {
-                // Windows 10 1903未満では失敗する可能性がある
-                // フォールバック: ユーザースペースタイムスタンプを使用
-                fprintf(stderr, "Warning: SIO_TIMESTAMPING not available (error %d); using userspace timestamps\n",
-                        WSAGetLastError());
-            }
-        }
+        enable_kernel_timestamping_windows(sockfd);
 #endif
 
         // 受信TTL/Hop Limit取得の有効化 (可能な場合)
@@ -407,12 +391,9 @@ static SOCKET init_reflector_socket(uint16_t port, int af_hint, int *out_family)
  * STAMPパケットの反射処理
  * @return 成功時0、エラー時-1
  *
- * 注: この関数はホットパスであり、インライン化によりオーバーヘッドを削減する。
- * GCC属性:
- *   - always_inline: 関数呼び出しオーバーヘッドを排除
- *   - hot: キャッシュ最適化のヒント
+ * 注: この関数はホットパスであり、hot属性によりキャッシュ最適化を促進する。
  */
-static inline __attribute__((always_inline, hot))
+static inline __attribute__((hot))
 int reflect_packet(SOCKET sockfd, uint8_t *buffer, int send_len,
                    const struct sockaddr_storage *cliaddr, socklen_t len, uint8_t ttl,
                    uint32_t t2_sec, uint32_t t2_frac)
@@ -491,9 +472,9 @@ int reflect_packet(SOCKET sockfd, uint8_t *buffer, int send_len,
  * STAMPパケットの受信（タイムスタンプ付き）
  * @return 受信バイト数、エラー時-1
  *
- * 注: この関数はホットパスであり、インライン化によりオーバーヘッドを削減する。
+ * 注: この関数はホットパスであり、hot属性によりキャッシュ最適化を促進する。
  */
-static inline __attribute__((always_inline, hot))
+static inline __attribute__((hot))
 int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
                       struct sockaddr_storage *cliaddr, socklen_t *len, uint8_t *ttl,
                       uint32_t *t2_sec, uint32_t *t2_frac,
@@ -590,7 +571,7 @@ int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
 #else
     struct msghdr msg;
     struct iovec iov;
-    char control[CMSG_SPACE(sizeof(int)) + CMSG_SPACE(sizeof(struct timespec))];
+    char control[STAMP_CMSG_BUFSIZE];
     ssize_t n;
 
     if (ttl)

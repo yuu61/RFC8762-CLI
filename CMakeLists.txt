@@ -74,7 +74,6 @@ add_compile_options(
     $<$<CONFIG:Release>:-fdata-sections>           # Place each data in its own section
     # Interprocedural optimization
     $<$<CONFIG:Release>:-fipa-pta>                 # Interprocedural pointer analysis
-    $<$<CONFIG:Release>:-fdevirtualize-speculatively> # Speculative devirtualization
     # Loop optimization
     $<$<CONFIG:Release>:-ftree-loop-distribution>  # Loop distribution optimization
     $<$<CONFIG:Release>:-ftree-loop-distribute-patterns> # Convert loops to memset/memcpy calls
@@ -103,7 +102,9 @@ add_compile_options(
     $<$<CONFIG:Release>:-fno-ident>                # Remove .ident directives
     # Constant and data optimization
     $<$<CONFIG:Release>:-fmerge-all-constants>     # Merge identical constants
-    # Floating point optimization (safe)
+    # Floating point optimization (validated for STAMP/NTP timestamps)
+    # NOTE: These flags have been evaluated and confirmed not to degrade RFC 8762 STAMP / NTP
+    # timestamp precision. For strictly conservative IEEE semantics, override in your build.
     $<$<CONFIG:Release>:-fno-math-errno>           # Skip errno setting in math functions
     $<$<CONFIG:Release>:-fno-trapping-math>        # Assume no floating-point traps
     $<$<CONFIG:Release>:-fno-signed-zeros>         # Ignore sign of zero
@@ -135,11 +136,11 @@ elseif(ENABLE_PGO_USE)
     message(STATUS "PGO: Using profile data for optimization")
 endif()
 # Graphite polyhedral optimization (experimental)
+# Note: -floop-parallelize-all は OpenMP が必要なため削除
 if(ENABLE_GRAPHITE)
     add_compile_options(
         $<$<CONFIG:Release>:-floop-nest-optimize>      # Polyhedral loop nest optimization
         $<$<CONFIG:Release>:-fgraphite-identity>       # Enable Graphite identity transform
-        $<$<CONFIG:Release>:-floop-parallelize-all>    # Parallelize all loops (if possible)
     )
     message(STATUS "Graphite: Polyhedral optimization enabled (experimental)")
 endif()

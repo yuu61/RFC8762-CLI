@@ -65,9 +65,12 @@ typedef int SOCKET;
 #define STAMP_CMSG_BUFSIZE 128
 
 // Linux: SO_BUSY_POLLの設定値（マイクロ秒）
-// 0より大きい値を設定すると、recvmsg()がビジーポーリングモードで動作し、
-// パケット受信のレイテンシが削減される（CPU使用率は増加）
-#define STAMP_BUSY_POLL_USEC 50
+// デフォルトでは0（無効）とし、高負荷となるビジーポーリングは
+// 高度なチューニングオプションとして明示的に有効化することを推奨。
+// 必要に応じて、コンパイル時に -DSTAMP_BUSY_POLL_USEC=50 などで上書き可能。
+#ifndef STAMP_BUSY_POLL_USEC
+#define STAMP_BUSY_POLL_USEC 0
+#endif
 
 // Linux: SO_TIMESTAMPINGフラグ（カーネルタイムスタンプ用）
 #ifdef __linux__
@@ -253,11 +256,12 @@ static inline double ntp_to_double(uint32_t sec, uint32_t frac)
  * @return 妥当な場合1、不正な場合0
  * @note パケット内容（MBZフィールド等）は検証しない。サイズが
  *       STAMP_BASE_PACKET_SIZE以上であれば妥当と判定する。
+ *       現在の実装ではpacketの内容を検査しないため、pure属性は使用しない。
  */
-__attribute__((nonnull(1), pure))
+__attribute__((nonnull(1)))
 static inline int validate_stamp_packet(const void *packet, int size)
 {
-    (void)packet; // nonnull属性で保証
+    (void)packet; // nonnull属性で保証、将来の拡張用に残す
     return size >= STAMP_BASE_PACKET_SIZE;
 }
 
@@ -435,22 +439,52 @@ static inline bool init_wsa_recvmsg(SOCKET sockfd, LPFN_WSARECVMSG *wsa_recvmsg)
 }
 
 /**
+ * Windows: SIO_TIMESTAMPINGでカーネルタイムスタンプを有効化
+ * @param sockfd ソケットディスクリプタ
+ * @return 成功時true、失敗時false
+ *
+ * Windows 10 1903以降で利用可能。失敗してもユーザースペースタイムスタンプに
+ * フォールバックするため、戻り値のチェックは必須ではない。
+ */
+static inline bool enable_kernel_timestamping_windows(SOCKET sockfd)
+{
+    TIMESTAMPING_CONFIG ts_config = {0};
+    ts_config.Flags = TIMESTAMPING_FLAG_RX; // 受信タイムスタンプを有効化
+    ts_config.TxTimestampsBuffered = 0;
+    DWORD bytes_returned = 0;
+
+    if (WSAIoctl(sockfd, SIO_TIMESTAMPING,
+                 &ts_config, sizeof(ts_config),
+                 NULL, 0, &bytes_returned, NULL, NULL) == 0)
+    {
+        printf("Kernel timestamping enabled (SIO_TIMESTAMPING)\n");
+        return true;
+    }
+    else
+    {
+        // Windows 10 1903未満では失敗する可能性がある
+        // フォールバック: ユーザースペースタイムスタンプを使用
+        fprintf(stderr, "Warning: SIO_TIMESTAMPING not available (error %d); using userspace timestamps\n",
+                WSAGetLastError());
+        return false;
+    }
+}
+
+/**
  * Windows: 制御メッセージからカーネルタイムスタンプを抽出
- * @param msg WSARecvMsg()で受信したWSAMSG構造体へのポインタ
- * @param ntp_sec NTP秒部分を格納するポインタ
- * @param ntp_frac NTP小数部分を格納するポインタ
+ * @param msg WSARecvMsg()で受信したWSAMSG構造体へのポインタ（NULLは未定義動作）
+ * @param ntp_sec NTP秒部分を格納するポインタ（NULLは未定義動作）
+ * @param ntp_frac NTP小数部分を格納するポインタ（NULLは未定義動作）
  * @return タイムスタンプが見つかった場合true、そうでない場合false
  *
  * Windows 10 1903以降でSIO_TIMESTAMPINGが有効な場合、
  * SO_TIMESTAMP制御メッセージにFILETIME形式のタイムスタンプが含まれる。
  */
+__attribute__((nonnull(1, 2, 3)))
 static inline bool extract_kernel_timestamp_windows(WSAMSG *msg,
                                                      uint32_t *ntp_sec,
                                                      uint32_t *ntp_frac)
 {
-    if (!msg || !ntp_sec || !ntp_frac)
-        return false;
-
     // MinGW WSA_CMSG_NXTHDR マクロの符号変換警告を抑制
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic push
@@ -473,7 +507,7 @@ static inline bool extract_kernel_timestamp_windows(WSAMSG *msg,
 
                 // 妥当性チェック: 2000年以降のタイムスタンプか確認
                 // 2000-01-01 00:00:00 UTC = 125911584000000000 (100ns ticks since 1601)
-                if (filetime > 125911584000000000ULL)
+                if (filetime >= 125911584000000000ULL)
                 {
                     // NTPタイムスタンプに変換
                     uint64_t unix_time = (filetime / WINDOWS_TICKS_PER_SEC) - WINDOWS_TO_NTP_OFFSET;
@@ -547,14 +581,30 @@ static inline bool extract_kernel_timestamp_linux(struct msghdr *msg,
         // SO_TIMESTAMPING: より高精度なカーネルタイムスタンプ
         if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMPING)
         {
+            // cmsg_len を検証して、必要な timespec 配列が格納されていることを確認する
+            size_t required_len = CMSG_LEN(3 * sizeof(struct timespec));
+            if ((size_t)cmsg->cmsg_len < required_len)
+            {
+                // 不完全な制御メッセージは無視
+                continue;
+            }
+
             // struct scm_timestamping contains 3 timespec: sw, hw, raw
             struct timespec *ts = (struct timespec *)CMSG_DATA(cmsg);
-            // ts[0]: software timestamp (SOF_TIMESTAMPING_SOFTWARE)
-            if (ts[0].tv_sec != 0 || ts[0].tv_nsec != 0)
+            // 可能であれば非ゼロのタイムスタンプを優先して選択するが、
+            // (0,0) も有効なタイムスタンプ値であるため、すべてゼロでも ts[0] を使用する
+            struct timespec *selected = &ts[0];
+            for (int i = 0; i < 3; i++)
             {
-                timespec_to_ntp(&ts[0], ntp_sec, ntp_frac);
-                return true;
+                if (ts[i].tv_sec != 0 || ts[i].tv_nsec != 0)
+                {
+                    selected = &ts[i];
+                    break;
+                }
             }
+
+            timespec_to_ntp(selected, ntp_sec, ntp_frac);
+            return true;
         }
 #endif
 #endif
