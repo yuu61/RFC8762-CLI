@@ -11,18 +11,89 @@ set(CMAKE_C_EXTENSIONS OFF)
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
+
+# Require GCC 14 or later
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    if(CMAKE_C_COMPILER_VERSION VERSION_LESS "14")
+        message(FATAL_ERROR "GCC 14 or later is required. Found: GCC ${CMAKE_C_COMPILER_VERSION}")
+    endif()
+else()
+    message(WARNING "This project is optimized for GCC 14+. Other compilers may work but are not officially supported.")
+endif()
 set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release")
 
-# Compiler flags
-if(MSVC)
-    # MSVC: /W4 for warnings, /utf-8 for UTF-8 source files
-    add_compile_options(/W4 /utf-8)
+# CPU optimization option
+option(PORTABLE_BUILD "Build portable binary for distribution" OFF)
+option(ENABLE_LTO "Enable Link-Time Optimization (increases build time and memory usage)" ON)
+option(ENABLE_REFLECTOR_DEBUG_LOG "Enable verbose reflector debug logging" OFF)
+
+# Architecture detection and optimization flags
+set(ARCH_FLAGS "")
+if(PORTABLE_BUILD)
+    # Portable: conservative optimization for broad compatibility
+    message(STATUS "Building portable binary")
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
+        set(ARCH_FLAGS "-mtune=generic")
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
+        set(ARCH_FLAGS "-mtune=generic")
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "arm")
+        set(ARCH_FLAGS "-mtune=generic-armv7-a")
+    endif()
 else()
-    # GCC/Clang: Enhanced warning flags
-    add_compile_options(-Wall -Wextra -Wpedantic)
-    # マルチコンフィグジェネレーター対応: ジェネレータ式を使用
-    add_compile_options($<$<CONFIG:Debug>:-g> $<$<CONFIG:Debug>:-O0>)
-    add_compile_options($<$<CONFIG:Release>:-O3>)
+    # Native: maximum optimization for build machine
+    message(STATUS "Building for native CPU")
+    set(ARCH_FLAGS "-march=native -mtune=native")
+endif()
+
+# Optional debug logging flags
+add_compile_definitions($<$<BOOL:${ENABLE_REFLECTOR_DEBUG_LOG}>:ENABLE_REFLECTOR_DEBUG_LOG>)
+
+# Compiler flags (GCC 14+)
+# Enhanced warning flags
+add_compile_options(-Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wformat=2)
+# Debug build
+add_compile_options($<$<CONFIG:Debug>:-g> $<$<CONFIG:Debug>:-O0>)
+# Release build: Maximum optimization
+add_compile_options(
+    $<$<CONFIG:Release>:-O3>                       # Maximum optimization level
+    $<$<CONFIG:Release>:-funroll-loops>            # Unroll loops
+    $<$<CONFIG:Release>:-fomit-frame-pointer>      # Omit frame pointer
+    $<$<CONFIG:Release>:-finline-functions>        # Inline functions
+    $<$<CONFIG:Release>:-ffunction-sections>       # Place each function in its own section
+    $<$<CONFIG:Release>:-fdata-sections>           # Place each data in its own section
+    $<$<CONFIG:Release>:-fipa-pta>                 # Interprocedural pointer analysis
+)
+# Linux/ELF-specific optimizations
+if(UNIX AND NOT APPLE)
+    add_compile_options(
+        $<$<CONFIG:Release>:-fno-plt>                  # Direct calls without PLT
+        $<$<CONFIG:Release>:-fno-semantic-interposition> # Optimize symbol resolution
+    )
+endif()
+# Link-time optimization (optional, controlled by ENABLE_LTO)
+if(ENABLE_LTO)
+    add_compile_options($<$<CONFIG:Release>:-flto>)
+endif()
+# Architecture-specific flags (Release build only for performance)
+# Debug builds use -O0 -g for better debugging experience
+if(ARCH_FLAGS)
+    separate_arguments(ARCH_FLAGS_LIST NATIVE_COMMAND "${ARCH_FLAGS}")
+    foreach(flag ${ARCH_FLAGS_LIST})
+        add_compile_options($<$<CONFIG:Release>:${flag}>)
+    endforeach()
+endif()
+add_compile_definitions($<$<CONFIG:Release>:NDEBUG>)
+# Linker flags for Release build (Linux-specific)
+if(UNIX AND NOT APPLE)
+    add_link_options(
+        $<$<CONFIG:Release>:-Wl,--gc-sections>   # Remove unused sections
+        $<$<CONFIG:Release>:-Wl,-O2>             # Linker optimization
+        $<$<CONFIG:Release>:-Wl,--as-needed>     # Only link needed libraries
+    )
+endif()
+# Linker flags for LTO (optional)
+if(ENABLE_LTO)
+    add_link_options($<$<CONFIG:Release>:-flto>)
 endif()
 
 # Platform-specific settings
@@ -72,4 +143,6 @@ add_custom_target(run_tests
 # Print build information
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "C Compiler: ${CMAKE_C_COMPILER}")
+message(STATUS "System processor: ${CMAKE_SYSTEM_PROCESSOR}")
+message(STATUS "Architecture flags: ${ARCH_FLAGS}")
 message(STATUS "Platform libraries: ${PLATFORM_LIBS}")

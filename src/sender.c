@@ -55,91 +55,144 @@ static void print_statistics(void)
     }
 }
 
+/**
+ * 使用方法の表示
+ * @param prog プログラム名
+ */
 static void print_usage(const char *prog)
 {
-    fprintf(stderr, "Usage: %s [server_ip] [port]\n", prog ? prog : "sender");
+    fprintf(stderr, "Usage: %s [-4|-6] [server_ip|hostname] [port]\n", prog ? prog : "sender");
+    fprintf(stderr, "Options:\n");
+    fprintf(stderr, "  -4    Force IPv4\n");
+    fprintf(stderr, "  -6    Force IPv6\n");
+    fprintf(stderr, "  (default: auto-detect from address format)\n");
 }
 
 /**
- * ソケットの初期化とタイムアウト設定 (RFC 8762 Section 3)
- * @param ip サーバーIPアドレス
- * @param port 宛先ポート番号
- * @param servaddr サーバーアドレス構造体のポインタ
+ * ソケットの初期化
  * @return ソケットディスクリプタ、エラー時INVALID_SOCKET
  */
-static SOCKET init_socket(const char *ip, uint16_t port, struct sockaddr_in *servaddr)
+static SOCKET init_socket(const char *host, uint16_t port,
+                          struct sockaddr_storage *servaddr, socklen_t *servaddr_len,
+                          int af_hint)
 {
-    SOCKET sockfd;
+    SOCKET sockfd = INVALID_SOCKET;
+    struct addrinfo *result = NULL;
+    struct addrinfo *rp;
+    int last_err = 0;
+    struct sockaddr_storage last_addr;
+    bool have_last_addr = false;
 
-    // UDPソケットの作成
-    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (SOCKET_ERROR_CHECK(sockfd))
+    if (resolve_address_list(host, port, af_hint, &result) != 0)
     {
-        PRINT_SOCKET_ERROR("socket creation failed");
+        fprintf(stderr, "Failed to resolve address: %s\n", host);
         return INVALID_SOCKET;
     }
 
-    // タイムアウト設定
+    for (rp = result; rp != NULL; rp = rp->ai_next)
+    {
+        if (rp->ai_family != AF_INET && rp->ai_family != AF_INET6)
+        {
+            continue;
+        }
+
+        sockfd = socket(rp->ai_family, SOCK_DGRAM, 0);
+        if (SOCKET_ERROR_CHECK(sockfd))
+        {
+            last_err = SOCKET_ERRNO;
+            continue;
+        }
+
 #ifdef _WIN32
-    DWORD timeout_ms = (SOCKET_TIMEOUT_SEC * 1000) + (SOCKET_TIMEOUT_USEC / 1000);
-    if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO,
-                   (const char *)&timeout_ms, sizeof(timeout_ms)) < 0)
-    {
-        PRINT_SOCKET_ERROR("setsockopt failed");
-        CLOSE_SOCKET(sockfd);
-        return INVALID_SOCKET;
-    }
+        DWORD timeout_ms = (SOCKET_TIMEOUT_SEC * 1000) + (SOCKET_TIMEOUT_USEC / 1000);
+        if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO,
+                       (const char *)&timeout_ms, sizeof(timeout_ms)) < 0)
+        {
+            PRINT_SOCKET_ERROR("setsockopt failed");
+            CLOSE_SOCKET(sockfd);
+            freeaddrinfo(result);
+            return INVALID_SOCKET;
+        }
 
-    // WSARecvMsg関数ポインタの取得（カーネルタイムスタンプ用）
-    init_wsa_recvmsg(sockfd, &g_wsa_recvmsg);
+        init_wsa_recvmsg(sockfd, &g_wsa_recvmsg);
 #else
-    struct timeval tv;
-    tv.tv_sec = SOCKET_TIMEOUT_SEC;
-    tv.tv_usec = SOCKET_TIMEOUT_USEC;
-    if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv)) < 0)
-    {
-        PRINT_SOCKET_ERROR("setsockopt failed");
-        CLOSE_SOCKET(sockfd);
-        return INVALID_SOCKET;
-    }
+        struct timeval tv;
+        tv.tv_sec = SOCKET_TIMEOUT_SEC;
+        tv.tv_usec = SOCKET_TIMEOUT_USEC;
+        if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv)) < 0)
+        {
+            PRINT_SOCKET_ERROR("setsockopt failed");
+            CLOSE_SOCKET(sockfd);
+            freeaddrinfo(result);
+            return INVALID_SOCKET;
+        }
 
-    // カーネルタイムスタンプの有効化 (SO_TIMESTAMPNS: ナノ秒精度)
 #ifdef SO_TIMESTAMPNS
-    {
-        int opt = 1;
-        (void)setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMPNS, &opt, sizeof(opt));
-    }
+        {
+            int opt = 1;
+            (void)setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMPNS, &opt, sizeof(opt));
+        }
 #elif defined(SO_TIMESTAMP)
-    {
-        int opt = 1;
-        (void)setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMP, &opt, sizeof(opt));
-    }
+        {
+            int opt = 1;
+            (void)setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMP, &opt, sizeof(opt));
+        }
 #endif
 #endif
 
-    // サーバーアドレスの設定
-    memset(servaddr, 0, sizeof(*servaddr));
-    servaddr->sin_family = AF_INET;
-    servaddr->sin_port = htons(port);
-    if (inet_pton(AF_INET, ip, &servaddr->sin_addr) <= 0)
-    {
-        fprintf(stderr, "Invalid address: %s\n", ip);
-        CLOSE_SOCKET(sockfd);
-        return INVALID_SOCKET;
+        if (connect(sockfd, rp->ai_addr, ADDRLEN_CAST(rp->ai_addrlen)) < 0)
+        {
+            last_err = SOCKET_ERRNO;
+            if (rp->ai_addrlen <= sizeof(last_addr))
+            {
+                memset(&last_addr, 0, sizeof(last_addr));
+                memcpy(&last_addr, rp->ai_addr, rp->ai_addrlen);
+                have_last_addr = true;
+            }
+            CLOSE_SOCKET(sockfd);
+            sockfd = INVALID_SOCKET;
+            continue;
+        }
+
+        memset(servaddr, 0, sizeof(*servaddr));
+        memcpy(servaddr, rp->ai_addr, rp->ai_addrlen);
+        *servaddr_len = (socklen_t)rp->ai_addrlen;
+        freeaddrinfo(result);
+        return sockfd;
     }
 
-    return sockfd;
+    freeaddrinfo(result);
+
+    fprintf(stderr, "Failed to connect to any resolved address for %s:%u\n",
+            host, (unsigned int)port);
+    if (last_err != 0)
+    {
+        fprintf(stderr, "connect to remote STAMP server failed: error %d\n", last_err);
+    }
+
+    if (have_last_addr)
+    {
+        char addrstr[INET6_ADDRSTRLEN] = {0};
+        uint16_t port_tmp = sockaddr_get_port(&last_addr);
+        if (sockaddr_to_string(&last_addr, addrstr, sizeof(addrstr)) != NULL)
+        {
+            fprintf(stderr,
+                    "Last attempted address: %s:%u (remote host or network may be unreachable).\n",
+                    addrstr, (unsigned int)port_tmp);
+        }
+    }
+
+    return INVALID_SOCKET;
 }
 
 /**
  * STAMPパケットの送信 (RFC 8762 Section 4.2.1)
  * @param sockfd ソケットディスクリプタ
  * @param seq シーケンス番号
- * @param servaddr サーバーアドレス
  * @param tx_packet 送信パケットのポインタ
  * @return 成功時0、エラー時-1
  */
-static int send_stamp_packet(SOCKET sockfd, uint32_t seq, const struct sockaddr_in *servaddr,
+static int send_stamp_packet(SOCKET sockfd, uint32_t seq,
                              struct stamp_sender_packet *tx_packet)
 {
     uint32_t t1_sec, t1_frac;
@@ -158,10 +211,9 @@ static int send_stamp_packet(SOCKET sockfd, uint32_t seq, const struct sockaddr_
     tx_packet->timestamp_frac = t1_frac;
 
     // パケット送信
-    if (sendto(sockfd, (const char *)tx_packet, sizeof(*tx_packet), 0,
-               (const struct sockaddr *)servaddr, sizeof(*servaddr)) < 0)
+    if (send(sockfd, (const char *)tx_packet, (int)sizeof(*tx_packet), 0) < 0)
     {
-        PRINT_SOCKET_ERROR("sendto failed");
+        PRINT_SOCKET_ERROR("send failed");
         return -1;
     }
 
@@ -171,27 +223,20 @@ static int send_stamp_packet(SOCKET sockfd, uint32_t seq, const struct sockaddr_
 
 /**
  * カーネルタイムスタンプ付きでパケットを受信
- * @param sockfd ソケットディスクリプタ
- * @param buffer 受信バッファ
- * @param buffer_len バッファサイズ
- * @param servaddr サーバーアドレス
- * @param len アドレス長
- * @param t4_sec T4秒部分（出力）
- * @param t4_frac T4小数部分（出力）
  * @return 受信バイト数、エラー時-1
  */
 static int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len,
-                               struct sockaddr_in *servaddr, socklen_t *len,
+                               struct sockaddr_storage *servaddr, socklen_t *len,
                                uint32_t *t4_sec, uint32_t *t4_frac)
 {
-    int n;
+    ssize_t n;
 
 #ifdef _WIN32
     if (g_wsa_recvmsg != NULL)
     {
         WSABUF data_buf;
         WSAMSG msg;
-        char control[WSA_CMSG_SPACE(sizeof(struct timeval))];
+        char control[STAMP_CMSG_BUFSIZE];
         DWORD bytes = 0;
 
         data_buf.buf = (CHAR *)buffer;
@@ -209,8 +254,6 @@ static int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len
             return -1;
         }
 
-        // カーネルタイムスタンプ取得を試みる（Windows では通常利用不可）
-        // フォールバック: 即座にユーザースペースタイムスタンプ取得
         get_ntp_timestamp(t4_sec, t4_frac);
         *len = msg.namelen;
         return (int)bytes;
@@ -223,12 +266,11 @@ static int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len
         {
             get_ntp_timestamp(t4_sec, t4_frac);
         }
-        return n;
+        return (int)n;
     }
 #else
     struct msghdr msg;
     struct iovec iov;
-    // SO_TIMESTAMPNS用にtimespec分のスペースを確保
     char control[CMSG_SPACE(sizeof(struct timespec))];
 
     memset(&msg, 0, sizeof(msg));
@@ -249,7 +291,6 @@ static int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len
 
     *len = msg.msg_namelen;
 
-    // カーネルタイムスタンプを探す
     bool timestamp_found = false;
     struct cmsghdr *cmsg;
     for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg))
@@ -274,33 +315,29 @@ static int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len
 #endif
     }
 
-    // カーネルタイムスタンプが取得できなかった場合はフォールバック
     if (!timestamp_found)
     {
         get_ntp_timestamp(t4_sec, t4_frac);
     }
 
-    return n;
+    return (int)n;
 #endif
 }
 
 /**
- * STAMPパケットの受信と処理 (RFC 8762 Section 4.2)
- * @param sockfd ソケットディスクリプタ
- * @param tx_packet 送信パケット
- * @param servaddr サーバーアドレス
+ * STAMPパケットの受信と処理
  * @return 成功時0、エラー時-1
  */
-static int receive_and_process_packet(SOCKET sockfd, const struct stamp_sender_packet *tx_packet,
-                                      struct sockaddr_in *servaddr)
+static int receive_and_process_packet(SOCKET sockfd, const struct stamp_sender_packet *tx_packet)
 {
     struct stamp_reflector_packet rx_packet;
-    socklen_t len = sizeof(*servaddr);
+    struct sockaddr_storage recvaddr;
+    socklen_t len = sizeof(recvaddr);
     uint32_t t4_sec = 0, t4_frac = 0;
     uint8_t buffer[STAMP_MAX_PACKET_SIZE];
 
     // パケット受信（カーネルタイムスタンプ付き）
-    int n = recv_with_timestamp(sockfd, buffer, sizeof(buffer), servaddr, &len, &t4_sec, &t4_frac);
+    int n = recv_with_timestamp(sockfd, buffer, sizeof(buffer), &recvaddr, &len, &t4_sec, &t4_frac);
     if (n < 0)
     {
 #ifdef _WIN32
@@ -347,7 +384,9 @@ static int receive_and_process_packet(SOCKET sockfd, const struct stamp_sender_p
     // ただし、クロックオフセットがある場合 T2, T3 の順序が逆転することがある
     if (t1 > t4)
     {
-        fprintf(stderr, "Warning: T1 > T4 detected (%.9f > %.9f). Severe clock skew or timestamp error.\n", t1, t4);
+        fprintf(stderr, "Warning: T1 > T4 detected. Severe clock skew or timestamp error.\n");
+        fprintf(stderr, "  T1=%.9f, T2=%.9f, T3=%.9f, T4=%.9f\n", t1, t2, t3, t4);
+        fprintf(stderr, "  Difference: %.6f ms\n", (t1 - t4) * 1000.0);
         g_negative_delay_seen = true;
     }
 
@@ -384,11 +423,14 @@ static int receive_and_process_packet(SOCKET sockfd, const struct stamp_sender_p
 
 int main(int argc, char *argv[])
 {
-    SOCKET sockfd;
-    struct sockaddr_in servaddr;
+    SOCKET sockfd = INVALID_SOCKET;
+    struct sockaddr_storage servaddr;
+    socklen_t servaddr_len;
     struct stamp_sender_packet tx_packet;
     uint32_t seq = 0;
     uint16_t port = PORT;
+    int af_hint = AF_UNSPEC; // 自動検出（デフォルト）
+    int exit_code = 0;
 
 #ifdef _WIN32
     // Windows: ソケット初期化
@@ -406,33 +448,58 @@ int main(int argc, char *argv[])
     signal(SIGINT, stamp_signal_handler);
 #endif
 
-    // コマンドライン引数からIPアドレスを取得（なければデフォルト使用）
-    if (argc > 3)
+    // getopt()によるオプションパース
+    int opt;
+    while ((opt = getopt(argc, argv, "46")) != -1)
     {
-        print_usage(argc > 0 ? argv[0] : "sender");
-        return 1;
+        switch (opt)
+        {
+        case '4':
+            af_hint = AF_INET;
+            break;
+        case '6':
+            af_hint = AF_INET6;
+            break;
+        default:
+            print_usage(argc > 0 ? argv[0] : "sender");
+            exit_code = 1;
+            goto cleanup;
+        }
     }
 
-    const char *ip = (argc > 1) ? argv[1] : SERVER_IP;
-    if (argc > 2 && parse_port(argv[2], &port) != 0)
+    // 残りの引数の数を確認
+    int remaining_args = argc - optind;
+    if (remaining_args > 2)
     {
-        fprintf(stderr, "Invalid port: %s\n", argv[2]);
         print_usage(argc > 0 ? argv[0] : "sender");
-        return 1;
+        exit_code = 1;
+        goto cleanup;
+    }
+
+    const char *host = (remaining_args > 0) ? argv[optind] : SERVER_IP;
+    if (remaining_args > 1 && parse_port(argv[optind + 1], &port) != 0)
+    {
+        fprintf(stderr, "Invalid port: %s\n", argv[optind + 1]);
+        print_usage(argc > 0 ? argv[0] : "sender");
+        exit_code = 1;
+        goto cleanup;
     }
 
     // ソケットの初期化
-    sockfd = init_socket(ip, port, &servaddr);
+    sockfd = init_socket(host, port, &servaddr, &servaddr_len, af_hint);
     if (SOCKET_ERROR_CHECK(sockfd))
     {
-#ifdef _WIN32
-        WSACleanup();
-#endif
-        return 1;
+        exit_code = 1;
+        goto cleanup;
     }
 
     // 測定開始メッセージの表示
-    printf("STAMP Sender targeting %s:%u\n", ip, port);
+    {
+        char addr_port_str[INET6_ADDRSTRLEN + 8];
+        const char *family_str = (servaddr.ss_family == AF_INET6) ? "IPv6" : "IPv4";
+        format_sockaddr_with_port(&servaddr, addr_port_str, sizeof(addr_port_str));
+        printf("STAMP Sender targeting %s (%s)\n", addr_port_str, family_str);
+    }
     printf("Press Ctrl+C to stop and show statistics\n");
     printf("Seq\tFwd(ms)\t\tBwd(ms)\t\tRTT(ms)\tOffset(ms)\t[adj_Fwd]\t[adj_Bwd]\n");
     printf("--------------------------------------------------------------------------------------------\n");
@@ -440,9 +507,9 @@ int main(int argc, char *argv[])
     // メインループ
     while (g_running)
     {
-        if (send_stamp_packet(sockfd, seq, &servaddr, &tx_packet) == 0)
+        if (send_stamp_packet(sockfd, seq, &tx_packet) == 0)
         {
-            receive_and_process_packet(sockfd, &tx_packet, &servaddr);
+            receive_and_process_packet(sockfd, &tx_packet);
         }
         seq++;
 
@@ -450,7 +517,7 @@ int main(int argc, char *argv[])
         // Ctrl+Cで中断できるよう、100ms間隔でスリープしてg_runningをチェック
         {
             int total_ms = SEND_INTERVAL_SEC * 1000;
-            int sleep_interval_ms = 100;
+            int sleep_interval_ms = SLEEP_CHECK_INTERVAL_MS;
             for (int elapsed = 0; elapsed < total_ms && g_running; elapsed += sleep_interval_ms)
             {
                 int remaining = total_ms - elapsed;
@@ -466,10 +533,14 @@ int main(int argc, char *argv[])
     // 統計情報の表示
     print_statistics();
 
+cleanup:
     // クリーンアップ
-    CLOSE_SOCKET(sockfd);
+    if (!SOCKET_ERROR_CHECK(sockfd))
+    {
+        CLOSE_SOCKET(sockfd);
+    }
 #ifdef _WIN32
     WSACleanup();
 #endif
-    return 0;
+    return exit_code;
 }

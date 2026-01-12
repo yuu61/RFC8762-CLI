@@ -1,6 +1,5 @@
 # Build artifacts
 /build/
-/build_*/
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
@@ -43,6 +42,7 @@ Thumbs.db
 *.user
 *.code-workspace
 /.claude/
+tmpclaude-*-cwd
 
 # Tool metadata
 compile_commands.json
