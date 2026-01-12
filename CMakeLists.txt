@@ -27,6 +27,15 @@ option(PORTABLE_BUILD "Build portable binary for distribution" OFF)
 option(ENABLE_LTO "Enable Link-Time Optimization (increases build time and memory usage)" ON)
 option(ENABLE_REFLECTOR_DEBUG_LOG "Enable verbose reflector debug logging" OFF)
 
+# Profile-Guided Optimization (PGO) options
+# Usage: 1) cmake -DENABLE_PGO_GENERATE=ON .. && make && ./sender (run workload)
+#        2) cmake -DENABLE_PGO_USE=ON .. && make
+option(ENABLE_PGO_GENERATE "Generate profile data for PGO (step 1)" OFF)
+option(ENABLE_PGO_USE "Use profile data for optimization (step 2)" OFF)
+
+# Graphite polyhedral optimization (experimental, requires GCC built with ISL)
+option(ENABLE_GRAPHITE "Enable Graphite polyhedral loop optimization (experimental)" OFF)
+
 # Architecture detection and optimization flags
 set(ARCH_FLAGS "")
 if(PORTABLE_BUILD)
@@ -55,13 +64,51 @@ add_compile_options(-Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wformat=2)
 add_compile_options($<$<CONFIG:Debug>:-g> $<$<CONFIG:Debug>:-O0>)
 # Release build: Maximum optimization
 add_compile_options(
+    # Core optimization
     $<$<CONFIG:Release>:-O3>                       # Maximum optimization level
     $<$<CONFIG:Release>:-funroll-loops>            # Unroll loops
     $<$<CONFIG:Release>:-fomit-frame-pointer>      # Omit frame pointer
     $<$<CONFIG:Release>:-finline-functions>        # Inline functions
+    # Section optimization
     $<$<CONFIG:Release>:-ffunction-sections>       # Place each function in its own section
     $<$<CONFIG:Release>:-fdata-sections>           # Place each data in its own section
+    # Interprocedural optimization
     $<$<CONFIG:Release>:-fipa-pta>                 # Interprocedural pointer analysis
+    $<$<CONFIG:Release>:-fdevirtualize-speculatively> # Speculative devirtualization
+    # Loop optimization
+    $<$<CONFIG:Release>:-ftree-loop-distribution>  # Loop distribution optimization
+    $<$<CONFIG:Release>:-ftree-loop-distribute-patterns> # Convert loops to memset/memcpy calls
+    $<$<CONFIG:Release>:-ftree-loop-im>            # Loop invariant motion
+    $<$<CONFIG:Release>:-ftree-loop-ivcanon>       # Canonical induction variables
+    $<$<CONFIG:Release>:-fivopts>                  # Induction variable optimization
+    $<$<CONFIG:Release>:-fprefetch-loop-arrays>    # Generate memory prefetch instructions
+    $<$<CONFIG:Release>:-fvariable-expansion-in-unroller> # Variable expansion in loop unrolling
+    # Register and scheduling optimization
+    $<$<CONFIG:Release>:-fweb>                     # Web construction for register allocation
+    $<$<CONFIG:Release>:-frename-registers>        # Rename registers to avoid false dependencies
+    $<$<CONFIG:Release>:-fschedule-insns>          # Instruction scheduling before register allocation
+    $<$<CONFIG:Release>:-fschedule-insns2>         # Instruction scheduling after register allocation
+    $<$<CONFIG:Release>:-fsched-pressure>          # Schedule with register pressure
+    $<$<CONFIG:Release>:-fschedule-fusion>         # Group similar instructions for execution efficiency
+    $<$<CONFIG:Release>:-fmodulo-sched>            # Modulo scheduling for loops
+    $<$<CONFIG:Release>:-fmodulo-sched-allow-regmoves> # Allow register moves in modulo scheduling
+    # Superblock optimization
+    $<$<CONFIG:Release>:-ftracer>                  # Tail duplication to form superblocks
+    # Global common subexpression elimination
+    $<$<CONFIG:Release>:-fgcse-sm>                 # Store motion after GCSE
+    $<$<CONFIG:Release>:-fgcse-las>                # Load after store optimization
+    # Table and metadata reduction
+    $<$<CONFIG:Release>:-fno-unwind-tables>        # Remove unwind tables
+    $<$<CONFIG:Release>:-fno-asynchronous-unwind-tables> # Remove async unwind tables
+    $<$<CONFIG:Release>:-fno-ident>                # Remove .ident directives
+    # Constant and data optimization
+    $<$<CONFIG:Release>:-fmerge-all-constants>     # Merge identical constants
+    # Floating point optimization (safe)
+    $<$<CONFIG:Release>:-fno-math-errno>           # Skip errno setting in math functions
+    $<$<CONFIG:Release>:-fno-trapping-math>        # Assume no floating-point traps
+    $<$<CONFIG:Release>:-fno-signed-zeros>         # Ignore sign of zero
+    # Symbol visibility
+    $<$<CONFIG:Release>:-fvisibility=hidden>       # Hide symbols by default
 )
 # Linux/ELF-specific optimizations
 if(UNIX AND NOT APPLE)
@@ -73,6 +120,28 @@ endif()
 # Link-time optimization (optional, controlled by ENABLE_LTO)
 if(ENABLE_LTO)
     add_compile_options($<$<CONFIG:Release>:-flto>)
+endif()
+# Profile-Guided Optimization (PGO)
+if(ENABLE_PGO_GENERATE)
+    add_compile_options($<$<CONFIG:Release>:-fprofile-generate>)
+    add_link_options($<$<CONFIG:Release>:-fprofile-generate>)
+    message(STATUS "PGO: Profile generation enabled - run the binary to generate profile data")
+elseif(ENABLE_PGO_USE)
+    add_compile_options(
+        $<$<CONFIG:Release>:-fprofile-use>
+        $<$<CONFIG:Release>:-fprofile-correction>
+    )
+    add_link_options($<$<CONFIG:Release>:-fprofile-use>)
+    message(STATUS "PGO: Using profile data for optimization")
+endif()
+# Graphite polyhedral optimization (experimental)
+if(ENABLE_GRAPHITE)
+    add_compile_options(
+        $<$<CONFIG:Release>:-floop-nest-optimize>      # Polyhedral loop nest optimization
+        $<$<CONFIG:Release>:-fgraphite-identity>       # Enable Graphite identity transform
+        $<$<CONFIG:Release>:-floop-parallelize-all>    # Parallelize all loops (if possible)
+    )
+    message(STATUS "Graphite: Polyhedral optimization enabled (experimental)")
 endif()
 # Architecture-specific flags (Release build only for performance)
 # Debug builds use -O0 -g for better debugging experience
@@ -145,4 +214,8 @@ message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "C Compiler: ${CMAKE_C_COMPILER}")
 message(STATUS "System processor: ${CMAKE_SYSTEM_PROCESSOR}")
 message(STATUS "Architecture flags: ${ARCH_FLAGS}")
+message(STATUS "LTO enabled: ${ENABLE_LTO}")
+message(STATUS "PGO generate: ${ENABLE_PGO_GENERATE}")
+message(STATUS "PGO use: ${ENABLE_PGO_USE}")
+message(STATUS "Graphite enabled: ${ENABLE_GRAPHITE}")
 message(STATUS "Platform libraries: ${PLATFORM_LIBS}")
