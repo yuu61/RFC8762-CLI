@@ -30,6 +30,8 @@ option(ENABLE_REFLECTOR_DEBUG_LOG "Enable verbose reflector debug logging" OFF)
 # Profile-Guided Optimization (PGO) options
 # Usage: 1) cmake -DENABLE_PGO_GENERATE=ON .. && make && ./sender (run workload)
 #        2) cmake -DENABLE_PGO_USE=ON .. && make
+# IMPORTANT: Profile generation and profile use MUST use the same compiler version.
+#            Upgrading the compiler between steps will cause errors or suboptimal code.
 option(ENABLE_PGO_GENERATE "Generate profile data for PGO (step 1)" OFF)
 option(ENABLE_PGO_USE "Use profile data for optimization (step 2)" OFF)
 
@@ -139,12 +141,20 @@ elseif(ENABLE_PGO_USE)
 endif()
 # Graphite polyhedral optimization (experimental)
 # Note: -floop-parallelize-all は OpenMP が必要なため削除
+# Note: Graphite requires GCC to be built with ISL (Integer Set Library) support
 if(ENABLE_GRAPHITE)
-    add_compile_options(
-        $<$<CONFIG:Release>:-floop-nest-optimize>      # Polyhedral loop nest optimization
-        $<$<CONFIG:Release>:-fgraphite-identity>       # Enable Graphite identity transform
-    )
-    message(STATUS "Graphite: Polyhedral optimization enabled (experimental)")
+    include(CheckCCompilerFlag)
+    check_c_compiler_flag("-floop-nest-optimize" HAVE_GRAPHITE_SUPPORT)
+    if(HAVE_GRAPHITE_SUPPORT)
+        add_compile_options(
+            $<$<CONFIG:Release>:-floop-nest-optimize>      # Polyhedral loop nest optimization
+            $<$<CONFIG:Release>:-fgraphite-identity>       # Enable Graphite identity transform
+        )
+        message(STATUS "Graphite: Polyhedral optimization enabled (experimental)")
+    else()
+        message(WARNING "Graphite: ISL support not found in compiler. Graphite optimization disabled. "
+                        "To enable, rebuild GCC with --with-isl.")
+    endif()
 endif()
 # Architecture-specific flags (Release build only for performance)
 # Debug builds use -O0 -g for better debugging experience

@@ -596,16 +596,33 @@ static inline bool extract_kernel_timestamp_linux(struct msghdr *msg,
 
             // struct scm_timestamping contains 3 timespec: sw, hw, raw
             struct timespec *ts = (struct timespec *)CMSG_DATA(cmsg);
-            // 可能であれば非ゼロのタイムスタンプを優先して選択するが、
+            // 可能であれば非ゼロかつ有効なタイムスタンプを優先して選択するが、
             // (0,0) も有効なタイムスタンプ値であるため、すべてゼロでも ts[0] を使用する
-            struct timespec *selected = &ts[0];
+            // tv_nsec は 0 <= tv_nsec < 1000000000 の範囲でなければならない（POSIX準拠）
+            struct timespec *selected = NULL;
             for (int i = 0; i < 3; i++)
             {
+                // tv_nsec が有効範囲外の場合はスキップ（破損したタイムスタンプ）
+                if (ts[i].tv_nsec < 0 || ts[i].tv_nsec >= 1000000000L)
+                {
+                    continue;
+                }
+                // 非ゼロのタイムスタンプを優先
                 if (ts[i].tv_sec != 0 || ts[i].tv_nsec != 0)
                 {
                     selected = &ts[i];
                     break;
                 }
+                // 最初の有効な (0,0) タイムスタンプを記録
+                if (selected == NULL)
+                {
+                    selected = &ts[i];
+                }
+            }
+            // 有効なタイムスタンプが見つからない場合は次の制御メッセージへ
+            if (selected == NULL)
+            {
+                continue;
             }
 
             timespec_to_ntp(selected, ntp_sec, ntp_frac);
@@ -622,6 +639,11 @@ static inline bool extract_kernel_timestamp_linux(struct msghdr *msg,
                 continue;
             }
             struct timespec *ts = (struct timespec *)CMSG_DATA(cmsg);
+            // tv_nsec が有効範囲外の場合はスキップ（破損したタイムスタンプ）
+            if (ts->tv_nsec < 0 || ts->tv_nsec >= 1000000000L)
+            {
+                continue;
+            }
             timespec_to_ntp(ts, ntp_sec, ntp_frac);
             return true;
         }
@@ -635,6 +657,11 @@ static inline bool extract_kernel_timestamp_linux(struct msghdr *msg,
                 continue;
             }
             struct timeval *tv = (struct timeval *)CMSG_DATA(cmsg);
+            // tv_usec が有効範囲外の場合はスキップ（破損したタイムスタンプ）
+            if (tv->tv_usec < 0 || tv->tv_usec >= 1000000L)
+            {
+                continue;
+            }
             timeval_to_ntp(tv, ntp_sec, ntp_frac);
             return true;
         }
