@@ -1,5 +1,4 @@
-// Basic unit tests for RFC 8762 STAMP structures and helpers.
-// stamp.hを最初にインクルードして_POSIX_C_SOURCEを有効にする
+// RFC 8762 STAMP ユニットテスト
 #include "../src/stamp.h"
 
 #include <math.h>

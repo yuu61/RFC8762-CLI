@@ -69,12 +69,7 @@ static void print_usage(const char *prog)
 }
 
 /**
- * ソケットの初期化とタイムアウト設定 (RFC 8762 Section 3)
- * @param host サーバーIPアドレスまたはホスト名
- * @param port 宛先ポート番号
- * @param servaddr サーバーアドレス構造体のポインタ
- * @param servaddr_len アドレス構造体のサイズを格納するポインタ
- * @param af_hint アドレスファミリのヒント (AF_UNSPEC=自動, AF_INET, AF_INET6)
+ * ソケットの初期化
  * @return ソケットディスクリプタ、エラー時INVALID_SOCKET
  */
 static SOCKET init_socket(const char *host, uint16_t port,
@@ -88,7 +83,6 @@ static SOCKET init_socket(const char *host, uint16_t port,
     struct sockaddr_storage last_addr;
     bool have_last_addr = false;
 
-    // Resolve host/IP and keep the list for fallback attempts.
     if (resolve_address_list(host, port, af_hint, &result) != 0)
     {
         fprintf(stderr, "Failed to resolve address: %s\n", host);
@@ -102,7 +96,6 @@ static SOCKET init_socket(const char *host, uint16_t port,
             continue;
         }
 
-        // Create UDP socket for this address.
         sockfd = socket(rp->ai_family, SOCK_DGRAM, 0);
         if (SOCKET_ERROR_CHECK(sockfd))
         {
@@ -121,7 +114,6 @@ static SOCKET init_socket(const char *host, uint16_t port,
             return INVALID_SOCKET;
         }
 
-        // WSARecvMsg function pointer (kernel timestamp if available).
         init_wsa_recvmsg(sockfd, &g_wsa_recvmsg);
 #else
         struct timeval tv;
@@ -135,7 +127,6 @@ static SOCKET init_socket(const char *host, uint16_t port,
             return INVALID_SOCKET;
         }
 
-        // Enable kernel timestamps if available.
 #ifdef SO_TIMESTAMPNS
         {
             int opt = 1;
@@ -149,7 +140,6 @@ static SOCKET init_socket(const char *host, uint16_t port,
 #endif
 #endif
 
-        // Connect UDP socket to validate reachability.
         if (connect(sockfd, rp->ai_addr, ADDRLEN_CAST(rp->ai_addrlen)) < 0)
         {
             last_err = SOCKET_ERRNO;
@@ -233,13 +223,6 @@ static int send_stamp_packet(SOCKET sockfd, uint32_t seq,
 
 /**
  * カーネルタイムスタンプ付きでパケットを受信
- * @param sockfd ソケットディスクリプタ
- * @param buffer 受信バッファ
- * @param buffer_len バッファサイズ
- * @param servaddr サーバーアドレス
- * @param len アドレス長
- * @param t4_sec T4秒部分（出力）
- * @param t4_frac T4小数部分（出力）
  * @return 受信バイト数、エラー時-1
  */
 static int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len,
@@ -271,8 +254,6 @@ static int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len
             return -1;
         }
 
-        // カーネルタイムスタンプ取得を試みる（Windows では通常利用不可）
-        // フォールバック: 即座にユーザースペースタイムスタンプ取得
         get_ntp_timestamp(t4_sec, t4_frac);
         *len = msg.namelen;
         return (int)bytes;
@@ -290,7 +271,6 @@ static int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len
 #else
     struct msghdr msg;
     struct iovec iov;
-    // SO_TIMESTAMPNS用にtimespec分のスペースを確保
     char control[CMSG_SPACE(sizeof(struct timespec))];
 
     memset(&msg, 0, sizeof(msg));
@@ -311,7 +291,6 @@ static int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len
 
     *len = msg.msg_namelen;
 
-    // カーネルタイムスタンプを探す
     bool timestamp_found = false;
     struct cmsghdr *cmsg;
     for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg))
@@ -336,7 +315,6 @@ static int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len
 #endif
     }
 
-    // カーネルタイムスタンプが取得できなかった場合はフォールバック
     if (!timestamp_found)
     {
         get_ntp_timestamp(t4_sec, t4_frac);
@@ -347,9 +325,7 @@ static int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len
 }
 
 /**
- * STAMPパケットの受信と処理 (RFC 8762 Section 4.2)
- * @param sockfd ソケットディスクリプタ
- * @param tx_packet 送信パケット
+ * STAMPパケットの受信と処理
  * @return 成功時0、エラー時-1
  */
 static int receive_and_process_packet(SOCKET sockfd, const struct stamp_sender_packet *tx_packet)

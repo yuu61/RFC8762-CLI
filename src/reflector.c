@@ -40,11 +40,7 @@ static bool g_debug_mode = false;
     } while (0)
 
 /**
- * ファイアウォールルールを追加
- * セキュリティ注意: この関数はsystem()を使用しており、信頼された環境でのみ使用すべきです。
- * ポート番号は内部で検証済みの整数値のみを使用し、外部入力は直接渡しません。
- * @param port 開放するポート番号（検証済みの値のみ）
- * @param family アドレスファミリ (AF_INET, AF_INET6, AF_UNSPEC)
+ * ファイアウォールルールを追加（nftables使用）
  * @return 成功時0、エラー時-1
  */
 static int add_firewall_rule(uint16_t port, int family)
@@ -58,8 +54,6 @@ static int add_firewall_rule(uint16_t port, int family)
         return -1;
     }
 
-    // ポート番号の追加検証（parse_port()で検証済みだが、防御的にチェック）
-    // 注意: portはuint16_tのため65535を超えることはないが、0のチェックは必要
     if (port == 0)
     {
         fprintf(stderr, "Error: Invalid port number for firewall rule: %u\n", port);
@@ -110,8 +104,6 @@ static int add_firewall_rule(uint16_t port, int family)
 
 /**
  * ファイアウォールルールを削除
- * 注意: この関数はsystem(), printf(), fprintf()などの非async-signal-safe関数を使用するため、
- * シグナルハンドラから直接呼び出してはいけません。メインスレッドまたはatexit()から呼び出してください。
  */
 static void remove_firewall_rule(void)
 {
@@ -176,10 +168,7 @@ static LPFN_WSARECVMSG g_wsa_recvmsg = NULL;
 #endif
 
 /**
- * リスニングソケットの初期化 (RFC 8762 Section 3)
- * @param port リッスンするポート番号
- * @param af_hint アドレスファミリのヒント (AF_UNSPEC=デュアルスタック, AF_INET, AF_INET6)
- * @param out_family 実際に使用するアドレスファミリを格納するポインタ
+ * リスニングソケットの初期化
  * @return ソケットディスクリプタ、エラー時INVALID_SOCKET
  */
 static SOCKET init_reflector_socket(uint16_t port, int af_hint, int *out_family)
@@ -350,16 +339,7 @@ static SOCKET init_reflector_socket(uint16_t port, int af_hint, int *out_family)
 }
 
 /**
- * STAMPパケットの反射処理 (RFC 8762 Section 4.3.1)
- * Session-Reflector Stateless Mode
- * @param sockfd ソケットディスクリプタ
- * @param buffer 受信パケットバッファ
- * @param send_len 送信パケットサイズ
- * @param cliaddr クライアントアドレス
- * @param len クライアントアドレス構造体のサイズ
- * @param ttl IPv4 TTL値 または IPv6 Hop Limit値
- * @param t2_sec 受信タイムスタンプ秒部分
- * @param t2_frac 受信タイムスタンプ小数部分
+ * STAMPパケットの反射処理
  * @return 成功時0、エラー時-1
  */
 static int reflect_packet(SOCKET sockfd, uint8_t *buffer, int send_len,
@@ -438,16 +418,6 @@ static int reflect_packet(SOCKET sockfd, uint8_t *buffer, int send_len,
 
 /**
  * STAMPパケットの受信（タイムスタンプ付き）
- * @param sockfd ソケットディスクリプタ
- * @param buffer 受信バッファ
- * @param buffer_len バッファサイズ
- * @param cliaddr クライアントアドレス構造体
- * @param len アドレス構造体のサイズ
- * @param ttl TTL/Hop Limit値（出力）
- * @param t2_sec 受信タイムスタンプ秒部分（出力）
- * @param t2_frac 受信タイムスタンプ小数部分（出力）
- * @param socket_family ソケット作成時のアドレスファミリ（現在は未使用だが、
- *                      IPv4-mapped IPv6アドレスの処理等、将来の拡張用に予約）
  * @return 受信バイト数、エラー時-1
  */
 static int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
@@ -540,7 +510,6 @@ static int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
 #else
     struct msghdr msg;
     struct iovec iov;
-    // TTLとタイムスタンプの両方を格納できるサイズを確保
     char control[CMSG_SPACE(sizeof(int)) + CMSG_SPACE(sizeof(struct timespec))];
     ssize_t n;
 
@@ -567,7 +536,6 @@ static int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
 
     *len = msg.msg_namelen;
 
-    // T2: カーネルタイムスタンプを探す、なければユーザースペースで取得
     bool timestamp_found = false;
     struct cmsghdr *cmsg;
     for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg))
@@ -618,7 +586,6 @@ static int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
 #endif
     }
 
-    // カーネルタイムスタンプが取得できなかった場合はフォールバック
     if (!timestamp_found && t2_sec && t2_frac)
     {
         get_ntp_timestamp(t2_sec, t2_frac);
@@ -715,14 +682,10 @@ int main(int argc, char *argv[])
     signal(SIGINT, stamp_signal_handler);
     signal(SIGTERM, stamp_signal_handler);
 
-    // ファイアウォールルールを追加（root権限がある場合）
-    // 注意: remove_firewall_rule()は非async-signal-safe関数を使用するため、
-    // シグナルハンドラからではなく、atexit()とメインループ終了後に呼び出す
     if (geteuid() == 0)
     {
         if (add_firewall_rule(port, socket_family) == 0)
         {
-            // atexit()で正常終了時のクリーンアップを登録
             atexit(remove_firewall_rule);
         }
     }

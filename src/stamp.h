@@ -146,10 +146,9 @@ struct stamp_reflector_packet
 #undef PACKED
 
 /**
- * NTPタイムスタンプを取得 (RFC 5905 準拠)
- * 高頻度呼び出しのためinline化して関数呼び出しオーバーヘッドを削減
- * @param sec  秒部分を格納するポインタ (ネットワークバイトオーダー)
- * @param frac 小数部分を格納するポインタ (ネットワークバイトオーダー)
+ * NTPタイムスタンプを取得 (RFC 5905)
+ * @param sec  秒部分（ネットワークバイトオーダー）
+ * @param frac 小数部分（ネットワークバイトオーダー）
  * @return 成功時0、エラー時-1
  */
 static inline int get_ntp_timestamp(uint32_t *sec, uint32_t *frac)
@@ -199,11 +198,10 @@ static inline int get_ntp_timestamp(uint32_t *sec, uint32_t *frac)
 }
 
 /**
- * NTPタイムスタンプをdouble型のUNIX時刻に変換 (RFC 5905 準拠)
- * 高頻度呼び出しのためinline化して関数呼び出しオーバーヘッドを削減
- * @param sec  秒部分 (ネットワークバイトオーダー)
- * @param frac 小数部分 (ネットワークバイトオーダー)
- * @return UNIX時刻 (1970年1月1日からの秒数)
+ * NTPタイムスタンプをdouble型のUNIX時刻に変換
+ * @param sec  秒部分（ネットワークバイトオーダー）
+ * @param frac 小数部分（ネットワークバイトオーダー）
+ * @return UNIX時刻（秒）
  */
 static inline double ntp_to_double(uint32_t sec, uint32_t frac)
 {
@@ -213,9 +211,7 @@ static inline double ntp_to_double(uint32_t sec, uint32_t frac)
 }
 
 /**
- * STAMPパケットの基本的な妥当性チェック (RFC 8762 Section 4 準拠)
- * @param packet チェックするパケット
- * @param size パケットサイズ
+ * STAMPパケットの妥当性チェック
  * @return 妥当な場合1、不正な場合0
  */
 static inline int validate_stamp_packet(const void *packet, int size)
@@ -240,10 +236,6 @@ static int stamp_optopt = 0;
 
 /**
  * Windows用getopt()簡易実装
- * POSIXのgetopt()と互換性のある基本的なオプション解析を提供
- * @param argc 引数の数
- * @param argv 引数配列
- * @param optstring オプション文字列（':'で引数必須を指定）
  * @return オプション文字、終了時-1、エラー時'?'
  */
 static inline int stamp_getopt(int argc, char *const argv[], const char *optstring)
@@ -273,7 +265,6 @@ static inline int stamp_getopt(int argc, char *const argv[], const char *optstri
     }
 
     stamp_optind++;
-    // 以下、arg[2]へのアクセスは arg_len >= 3 の条件により境界チェック済み
     if (p[1] == ':')
     {
         // オプションが引数を要求する場合
@@ -475,10 +466,6 @@ static inline uint16_t sockaddr_get_port(const struct sockaddr_storage *addr)
 
 /**
  * sockaddr_storageをアドレス文字列に変換
- * getnameinfo()を使用してIPv4/IPv6両対応
- * @param addr sockaddr_storage構造体へのポインタ
- * @param buf 出力バッファ
- * @param buflen バッファサイズ（INET6_ADDRSTRLEN以上推奨）
  * @return 成功時buf、エラー時NULL
  */
 static inline const char *sockaddr_to_string(const struct sockaddr_storage *addr,
@@ -503,12 +490,7 @@ static inline const char *sockaddr_to_string(const struct sockaddr_storage *addr
 }
 
 /**
- * sockaddr_storageをアドレス文字列に変換（フォールバック付き）
- * 変換に失敗した場合は"<unknown>"を返す
- * @param addr sockaddr_storage構造体へのポインタ
- * @param buf 出力バッファ
- * @param buflen バッファサイズ（INET6_ADDRSTRLEN以上推奨）
- * @return 常にbuf（変換失敗時は"<unknown>"が格納される）
+ * sockaddr_storageをアドレス文字列に変換（失敗時は"<unknown>"）
  */
 static inline const char *sockaddr_to_string_safe(const struct sockaddr_storage *addr,
                                                   char *buf, size_t buflen)
@@ -524,12 +506,7 @@ static inline const char *sockaddr_to_string_safe(const struct sockaddr_storage 
 }
 
 /**
- * sockaddr_storageをポート番号付きアドレス文字列にフォーマット
- * IPv6の場合は[addr]:port形式、IPv4の場合はaddr:port形式
- * @param addr sockaddr_storage構造体へのポインタ
- * @param buf 出力バッファ
- * @param buflen バッファサイズ
- * @return 常にbuf
+ * アドレス:ポート形式の文字列を生成（IPv6は[addr]:port形式）
  */
 static inline const char *format_sockaddr_with_port(const struct sockaddr_storage *addr,
                                                     char *buf, size_t buflen)
@@ -554,12 +531,8 @@ static inline const char *format_sockaddr_with_port(const struct sockaddr_storag
 }
 
 /**
- * ホスト名またはIPアドレス文字列を解決してaddrinfoリストを取得
- * getaddrinfo()を使用してIPv4/IPv6両方に対応
- * @param host ホスト名またはIPアドレス文字列（MAX_HOSTNAME_LEN以下）
- * @param port ポート番号
- * @param af_hint アドレスファミリのヒント (AF_UNSPEC=自動, AF_INET, AF_INET6)
- * @param out_result getaddrinfo()の結果（使用後はfreeaddrinfo()が必要）
+ * ホスト名/IPアドレスを解決してaddrinfoリストを取得
+ * @param out_result 使用後はfreeaddrinfo()で解放が必要
  * @return 成功時0、エラー時-1
  */
 static inline int resolve_address_list(const char *host, uint16_t port, int af_hint,
@@ -600,15 +573,8 @@ static inline int resolve_address_list(const char *host, uint16_t port, int af_h
 }
 
 /**
- * ホスト名またはIPアドレス文字列を解決してsockaddr_storageに格納
- * getaddrinfo()を使用してIPv4/IPv6両方に対応
- * resolve_address_list()で取得したアドレスリストから最初のIPv4/IPv6エントリを使用します。
- * 接続失敗時のフォールバックが必要な場合は、resolve_address_list()で順に試行してください。
- * @param host ホスト名またはIPアドレス文字列
- * @param port ポート番号
- * @param af_hint アドレスファミリのヒント (AF_UNSPEC=自動, AF_INET, AF_INET6)
- * @param out_addr 解決結果を格納するsockaddr_storage構造体
- * @param out_addrlen 構造体サイズを格納するポインタ
+ * ホスト名/IPアドレスを解決してsockaddr_storageに格納
+ * @param af_hint AF_UNSPEC=自動, AF_INET, AF_INET6
  * @return 成功時0、エラー時-1
  */
 static inline int resolve_address(const char *host, uint16_t port, int af_hint,
