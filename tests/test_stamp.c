@@ -528,6 +528,165 @@ static void test_resolve_address(void)
     }
 }
 
+// Windows用 stamp_getopt() のユニットテスト
+#ifdef _WIN32
+// getoptの状態をリセットするヘルパー関数
+static void reset_getopt_state(void)
+{
+    stamp_optind = 1;
+    stamp_optarg = NULL;
+    stamp_optopt = 0;
+}
+
+static void test_stamp_getopt(void)
+{
+    int opt;
+
+    // テスト1: 基本的なオプション "-4"
+    {
+        char *argv[] = {"prog", "-4", NULL};
+        int argc = 2;
+        reset_getopt_state();
+
+        opt = stamp_getopt(argc, argv, "46");
+        EXPECT_TRUE(opt == '4', "getopt: -4 returns '4'");
+        EXPECT_EQ_ULL(stamp_optind, 2, "getopt: -4 advances optind to 2");
+
+        opt = stamp_getopt(argc, argv, "46");
+        EXPECT_TRUE(opt == -1, "getopt: returns -1 after all options");
+    }
+
+    // テスト2: 複数オプション "-4 -6"
+    {
+        char *argv[] = {"prog", "-4", "-6", NULL};
+        int argc = 3;
+        reset_getopt_state();
+
+        opt = stamp_getopt(argc, argv, "46");
+        EXPECT_TRUE(opt == '4', "getopt: first -4");
+        opt = stamp_getopt(argc, argv, "46");
+        EXPECT_TRUE(opt == '6', "getopt: then -6");
+        opt = stamp_getopt(argc, argv, "46");
+        EXPECT_TRUE(opt == -1, "getopt: -1 after all");
+    }
+
+    // テスト3: 引数付きオプション "-p 8080"
+    {
+        char *argv[] = {"prog", "-p", "8080", NULL};
+        int argc = 3;
+        reset_getopt_state();
+
+        opt = stamp_getopt(argc, argv, "p:");
+        EXPECT_TRUE(opt == 'p', "getopt: -p returns 'p'");
+        EXPECT_TRUE(stamp_optarg != NULL && strcmp(stamp_optarg, "8080") == 0,
+                    "getopt: -p optarg is 8080");
+        EXPECT_EQ_ULL(stamp_optind, 3, "getopt: -p 8080 advances optind to 3");
+    }
+
+    // テスト4: 引数がオプションに連結 "-p8080"
+    {
+        char *argv[] = {"prog", "-p8080", NULL};
+        int argc = 2;
+        reset_getopt_state();
+
+        opt = stamp_getopt(argc, argv, "p:");
+        EXPECT_TRUE(opt == 'p', "getopt: -p8080 returns 'p'");
+        EXPECT_TRUE(stamp_optarg != NULL && strcmp(stamp_optarg, "8080") == 0,
+                    "getopt: -p8080 optarg is 8080");
+    }
+
+    // テスト5: "--" 終端マーカー
+    {
+        char *argv[] = {"prog", "-4", "--", "-6", NULL};
+        int argc = 4;
+        reset_getopt_state();
+
+        opt = stamp_getopt(argc, argv, "46");
+        EXPECT_TRUE(opt == '4', "getopt: -4 before --");
+        opt = stamp_getopt(argc, argv, "46");
+        EXPECT_TRUE(opt == -1, "getopt: -- terminates options");
+        EXPECT_EQ_ULL(stamp_optind, 3, "getopt: -- leaves optind at 3");
+    }
+
+    // テスト6: 無効なオプション
+    {
+        char *argv[] = {"prog", "-x", NULL};
+        int argc = 2;
+        reset_getopt_state();
+
+        opt = stamp_getopt(argc, argv, "46");
+        EXPECT_TRUE(opt == '?', "getopt: -x returns '?'");
+        EXPECT_TRUE(stamp_optopt == 'x', "getopt: optopt is 'x'");
+    }
+
+    // テスト7: 必要な引数がない
+    {
+        char *argv[] = {"prog", "-p", NULL};
+        int argc = 2;
+        reset_getopt_state();
+
+        opt = stamp_getopt(argc, argv, "p:");
+        EXPECT_TRUE(opt == '?', "getopt: -p without arg returns '?'");
+        EXPECT_TRUE(stamp_optopt == 'p', "getopt: optopt is 'p'");
+    }
+
+    // テスト8: 余分な文字を拒否 "-4extra"
+    {
+        char *argv[] = {"prog", "-4extra", NULL};
+        int argc = 2;
+        reset_getopt_state();
+
+        opt = stamp_getopt(argc, argv, "46");
+        EXPECT_TRUE(opt == '?', "getopt: -4extra returns '?'");
+        EXPECT_TRUE(stamp_optopt == '4', "getopt: optopt is '4'");
+    }
+
+    // テスト9: オプションなしの引数
+    {
+        char *argv[] = {"prog", "arg1", "arg2", NULL};
+        int argc = 3;
+        reset_getopt_state();
+
+        opt = stamp_getopt(argc, argv, "46");
+        EXPECT_TRUE(opt == -1, "getopt: non-option returns -1");
+        EXPECT_EQ_ULL(stamp_optind, 1, "getopt: optind stays at 1");
+    }
+
+    // テスト10: 空の引数リスト
+    {
+        char *argv[] = {"prog", NULL};
+        int argc = 1;
+        reset_getopt_state();
+
+        opt = stamp_getopt(argc, argv, "46");
+        EXPECT_TRUE(opt == -1, "getopt: no args returns -1");
+    }
+
+    // テスト11: "-" のみ（オプションではない）
+    {
+        char *argv[] = {"prog", "-", NULL};
+        int argc = 2;
+        reset_getopt_state();
+
+        opt = stamp_getopt(argc, argv, "46");
+        EXPECT_TRUE(opt == -1, "getopt: single dash returns -1");
+    }
+
+    // テスト12: オプションと位置引数の混在
+    {
+        char *argv[] = {"prog", "-4", "192.168.1.1", "8080", NULL};
+        int argc = 4;
+        reset_getopt_state();
+
+        opt = stamp_getopt(argc, argv, "46");
+        EXPECT_TRUE(opt == '4', "getopt: -4 with trailing args");
+        opt = stamp_getopt(argc, argv, "46");
+        EXPECT_TRUE(opt == -1, "getopt: stops at non-option");
+        EXPECT_EQ_ULL(stamp_optind, 2, "getopt: optind at first non-option");
+    }
+}
+#endif
+
 int main(void)
 {
 #ifdef _WIN32
@@ -551,6 +710,10 @@ int main(void)
     test_resolve_address();
     // IPv6通信テスト
     test_ipv6_socket_communication();
+    // Windows getoptテスト
+#ifdef _WIN32
+    test_stamp_getopt();
+#endif
 
     if (g_tests_failed == 0)
     {
