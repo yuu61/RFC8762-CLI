@@ -61,7 +61,18 @@ typedef int SOCKET;
 // コントロールメッセージバッファサイズ
 // WSA_CMSG_SPACE/CMSG_SPACE マクロはMinGW環境で符号変換警告を出すため、
 // 固定サイズを使用（TTL/HopLimit用intとtimespec両方に十分なサイズ）
-#define STAMP_CMSG_BUFSIZE 64
+#define STAMP_CMSG_BUFSIZE 128
+
+// Linux: SO_BUSY_POLLの設定値（マイクロ秒）
+// 0より大きい値を設定すると、recvmsg()がビジーポーリングモードで動作し、
+// パケット受信のレイテンシが削減される（CPU使用率は増加）
+#define STAMP_BUSY_POLL_USEC 50
+
+// Linux: SO_TIMESTAMPINGフラグ（カーネルタイムスタンプ用）
+#ifdef __linux__
+#include <linux/net_tstamp.h>
+#include <linux/errqueue.h>
+#endif
 
 // アドレス長のキャスト（connect/bind等のソケット関数用）
 // Windows: int を期待、POSIX: socklen_t を期待
@@ -106,7 +117,34 @@ typedef int SOCKET;
 #ifdef _WIN32
 #define WINDOWS_TO_NTP_OFFSET 11644473600ULL
 #define WINDOWS_TICKS_PER_SEC 10000000ULL
+
+// Windows: SIO_TIMESTAMPING サポート (Windows 10 1903以降)
+// MinGW/MSYS2では定義されていない可能性があるため手動で定義
+#include <mstcpip.h>
+
+#ifndef SIO_TIMESTAMPING
+#define SIO_TIMESTAMPING _WSAIOW(IOC_VENDOR, 235)
 #endif
+
+#ifndef SO_TIMESTAMP
+#define SO_TIMESTAMP 0x300A
+#endif
+
+// TIMESTAMPING_CONFIG構造体（MinGWで未定義の場合）
+#ifndef TIMESTAMPING_FLAG_RX
+#define TIMESTAMPING_FLAG_RX 0x1
+#define TIMESTAMPING_FLAG_TX 0x2
+
+typedef struct _TIMESTAMPING_CONFIG {
+    ULONG Flags;
+    USHORT TxTimestampsBuffered;
+} TIMESTAMPING_CONFIG, *PTIMESTAMPING_CONFIG;
+
+// 受信タイムスタンプ用の制御メッセージ
+#define SO_TIMESTAMP_ID 0x300B
+#endif
+
+#endif // _WIN32
 
 // 構造体のパディングなしパッキング (GCC/Clang属性)
 #define PACKED __attribute__((packed))
@@ -399,6 +437,65 @@ static inline bool init_wsa_recvmsg(SOCKET sockfd, LPFN_WSARECVMSG *wsa_recvmsg)
     }
     return true;
 }
+
+/**
+ * Windows: 制御メッセージからカーネルタイムスタンプを抽出
+ * @param msg WSARecvMsg()で受信したWSAMSG構造体へのポインタ
+ * @param ntp_sec NTP秒部分を格納するポインタ
+ * @param ntp_frac NTP小数部分を格納するポインタ
+ * @return タイムスタンプが見つかった場合true、そうでない場合false
+ *
+ * Windows 10 1903以降でSIO_TIMESTAMPINGが有効な場合、
+ * SO_TIMESTAMP制御メッセージにFILETIME形式のタイムスタンプが含まれる。
+ */
+static inline bool extract_kernel_timestamp_windows(WSAMSG *msg,
+                                                     uint32_t *ntp_sec,
+                                                     uint32_t *ntp_frac)
+{
+    if (!msg || !ntp_sec || !ntp_frac)
+        return false;
+
+    WSACMSGHDR *cmsg;
+    // MinGW WSA_CMSG_NXTHDR マクロの符号変換警告を抑制
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+    for (cmsg = WSA_CMSG_FIRSTHDR(msg); cmsg != NULL; cmsg = WSA_CMSG_NXTHDR(msg, cmsg))
+    {
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+        // SO_TIMESTAMP または SO_TIMESTAMP_ID: カーネルタイムスタンプ
+        // SIO_TIMESTAMPINGで有効化した場合、SO_TIMESTAMP_IDで返される
+        if (cmsg->cmsg_level == SOL_SOCKET &&
+            (cmsg->cmsg_type == SO_TIMESTAMP || cmsg->cmsg_type == SO_TIMESTAMP_ID))
+        {
+            // FILETIME形式（Windows epoch: 1601-01-01からの100ナノ秒単位）
+            // cmsg_lenでデータサイズを検証
+            size_t data_len = cmsg->cmsg_len - WSA_CMSGDATA_ALIGN(sizeof(WSACMSGHDR));
+            if (data_len >= sizeof(UINT64))
+            {
+                UINT64 filetime;
+                memcpy(&filetime, WSA_CMSG_DATA(cmsg), sizeof(filetime));
+
+                // 妥当性チェック: 2000年以降のタイムスタンプか確認
+                // 2000-01-01 00:00:00 UTC = 125911584000000000 (100ns ticks since 1601)
+                if (filetime > 125911584000000000ULL)
+                {
+                    // NTPタイムスタンプに変換
+                    uint64_t unix_time = (filetime / WINDOWS_TICKS_PER_SEC) - WINDOWS_TO_NTP_OFFSET;
+                    uint64_t frac_100ns = filetime % WINDOWS_TICKS_PER_SEC;
+
+                    *ntp_sec = htonl((uint32_t)(unix_time + NTP_OFFSET));
+                    *ntp_frac = htonl(WINDOWS_100NS_TO_NTP_FRAC(frac_100ns));
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
 #endif
 
 #ifndef _WIN32
@@ -426,6 +523,64 @@ static inline void timeval_to_ntp(const struct timeval *tv,
 {
     *ntp_sec = htonl((uint32_t)((unsigned long)tv->tv_sec + NTP_OFFSET));
     *ntp_frac = htonl(USEC_TO_NTP_FRAC(tv->tv_usec));
+}
+
+/**
+ * Linux: 制御メッセージからカーネルタイムスタンプを抽出
+ * @param msg recvmsg()で受信したmsghdr構造体へのポインタ
+ * @param ntp_sec NTP秒部分を格納するポインタ
+ * @param ntp_frac NTP小数部分を格納するポインタ
+ * @return タイムスタンプが見つかった場合true、そうでない場合false
+ *
+ * 優先順位:
+ *   1. SCM_TIMESTAMPING (SO_TIMESTAMPING) - 最も高精度
+ *   2. SCM_TIMESTAMPNS (SO_TIMESTAMPNS) - ナノ秒精度
+ *   3. SCM_TIMESTAMP (SO_TIMESTAMP) - マイクロ秒精度
+ */
+static inline bool extract_kernel_timestamp_linux(struct msghdr *msg,
+                                                   uint32_t *ntp_sec,
+                                                   uint32_t *ntp_frac)
+{
+    if (!msg || !ntp_sec || !ntp_frac)
+        return false;
+
+    struct cmsghdr *cmsg;
+    for (cmsg = CMSG_FIRSTHDR(msg); cmsg != NULL; cmsg = CMSG_NXTHDR(msg, cmsg))
+    {
+#ifdef __linux__
+#ifdef SCM_TIMESTAMPING
+        // SO_TIMESTAMPING: より高精度なカーネルタイムスタンプ
+        if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMPING)
+        {
+            // struct scm_timestamping contains 3 timespec: sw, hw, raw
+            struct timespec *ts = (struct timespec *)CMSG_DATA(cmsg);
+            // ts[0]: software timestamp (SOF_TIMESTAMPING_SOFTWARE)
+            if (ts[0].tv_sec != 0 || ts[0].tv_nsec != 0)
+            {
+                timespec_to_ntp(&ts[0], ntp_sec, ntp_frac);
+                return true;
+            }
+        }
+#endif
+#endif
+#ifdef SCM_TIMESTAMPNS
+        if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMPNS)
+        {
+            struct timespec *ts = (struct timespec *)CMSG_DATA(cmsg);
+            timespec_to_ntp(ts, ntp_sec, ntp_frac);
+            return true;
+        }
+#endif
+#ifdef SCM_TIMESTAMP
+        if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMP)
+        {
+            struct timeval *tv = (struct timeval *)CMSG_DATA(cmsg);
+            timeval_to_ntp(tv, ntp_sec, ntp_frac);
+            return true;
+        }
+#endif
+    }
+    return false;
 }
 #endif
 

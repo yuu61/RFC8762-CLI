@@ -28,6 +28,7 @@ static struct sender_stats g_stats = {0, 0, 0, 1e9, 0, 0};
 
 #ifdef _WIN32
 static LPFN_WSARECVMSG g_wsa_recvmsg = NULL;
+static bool g_kernel_timestamp_enabled = false; // カーネルタイムスタンプが有効か
 #endif
 
 /**
@@ -115,6 +116,27 @@ static SOCKET init_socket(const char *host, uint16_t port,
         }
 
         init_wsa_recvmsg(sockfd, &g_wsa_recvmsg);
+
+        // Windows: SIO_TIMESTAMPINGでカーネルタイムスタンプを有効化
+        // Windows 10 1903以降で利用可能
+        {
+            TIMESTAMPING_CONFIG ts_config = {0};
+            ts_config.Flags = TIMESTAMPING_FLAG_RX; // 受信タイムスタンプを有効化
+            ts_config.TxTimestampsBuffered = 0;
+            DWORD bytes_returned = 0;
+
+            if (WSAIoctl(sockfd, SIO_TIMESTAMPING,
+                         &ts_config, sizeof(ts_config),
+                         NULL, 0, &bytes_returned, NULL, NULL) == 0)
+            {
+                g_kernel_timestamp_enabled = true;
+            }
+            else
+            {
+                // Windows 10 1903未満では失敗する可能性がある
+                g_kernel_timestamp_enabled = false;
+            }
+        }
 #else
         struct timeval tv;
         tv.tv_sec = SOCKET_TIMEOUT_SEC;
@@ -127,6 +149,7 @@ static SOCKET init_socket(const char *host, uint16_t port,
             return INVALID_SOCKET;
         }
 
+        // カーネルタイムスタンプの有効化 (SO_TIMESTAMPNS: ナノ秒精度)
 #ifdef SO_TIMESTAMPNS
         {
             int opt = 1;
@@ -138,6 +161,26 @@ static SOCKET init_socket(const char *host, uint16_t port,
             (void)setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMP, &opt, sizeof(opt));
         }
 #endif
+
+#ifdef __linux__
+        // SO_BUSY_POLL: ビジーポーリングでレイテンシ削減
+#ifdef SO_BUSY_POLL
+        {
+            int busy_poll = STAMP_BUSY_POLL_USEC;
+            (void)setsockopt(sockfd, SOL_SOCKET, SO_BUSY_POLL, &busy_poll, sizeof(busy_poll));
+        }
+#endif
+
+        // SO_TIMESTAMPING: カーネルレベルの送受信タイムスタンプ
+#ifdef SO_TIMESTAMPING
+        {
+            int ts_flags = SOF_TIMESTAMPING_RX_SOFTWARE |
+                           SOF_TIMESTAMPING_TX_SOFTWARE |
+                           SOF_TIMESTAMPING_SOFTWARE;
+            (void)setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMPING, &ts_flags, sizeof(ts_flags));
+        }
+#endif
+#endif // __linux__
 #endif
 
         if (connect(sockfd, rp->ai_addr, ADDRLEN_CAST(rp->ai_addrlen)) < 0)
@@ -224,10 +267,13 @@ static int send_stamp_packet(SOCKET sockfd, uint32_t seq,
 /**
  * カーネルタイムスタンプ付きでパケットを受信
  * @return 受信バイト数、エラー時-1
+ *
+ * 注: この関数はホットパスであり、インライン化によりオーバーヘッドを削減する。
  */
-static int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len,
-                               struct sockaddr_storage *servaddr, socklen_t *len,
-                               uint32_t *t4_sec, uint32_t *t4_frac)
+static inline __attribute__((always_inline, hot))
+int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len,
+                        struct sockaddr_storage *servaddr, socklen_t *len,
+                        uint32_t *t4_sec, uint32_t *t4_frac)
 {
     ssize_t n;
 
@@ -254,8 +300,17 @@ static int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len
             return -1;
         }
 
-        get_ntp_timestamp(t4_sec, t4_frac);
         *len = msg.namelen;
+
+        // カーネルタイムスタンプを抽出（共通関数を使用）
+        bool timestamp_found = extract_kernel_timestamp_windows(&msg, t4_sec, t4_frac);
+
+        // カーネルタイムスタンプが取得できなかった場合はユーザースペースタイムスタンプを使用
+        if (!timestamp_found)
+        {
+            get_ntp_timestamp(t4_sec, t4_frac);
+        }
+
         return (int)bytes;
     }
     else
@@ -271,7 +326,7 @@ static int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len
 #else
     struct msghdr msg;
     struct iovec iov;
-    char control[CMSG_SPACE(sizeof(struct timespec))];
+    char control[STAMP_CMSG_BUFSIZE];
 
     memset(&msg, 0, sizeof(msg));
     iov.iov_base = buffer;
@@ -291,29 +346,8 @@ static int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len
 
     *len = msg.msg_namelen;
 
-    bool timestamp_found = false;
-    struct cmsghdr *cmsg;
-    for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg))
-    {
-#ifdef SCM_TIMESTAMPNS
-        if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMPNS)
-        {
-            struct timespec *ts = (struct timespec *)CMSG_DATA(cmsg);
-            timespec_to_ntp(ts, t4_sec, t4_frac);
-            timestamp_found = true;
-            break;
-        }
-#endif
-#ifdef SCM_TIMESTAMP
-        if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMP)
-        {
-            struct timeval *tv = (struct timeval *)CMSG_DATA(cmsg);
-            timeval_to_ntp(tv, t4_sec, t4_frac);
-            timestamp_found = true;
-            break;
-        }
-#endif
-    }
+    // カーネルタイムスタンプを抽出（共通関数を使用）
+    bool timestamp_found = extract_kernel_timestamp_linux(&msg, t4_sec, t4_frac);
 
     if (!timestamp_found)
     {

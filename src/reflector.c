@@ -165,6 +165,7 @@ static void print_usage(const char *prog)
 
 #ifdef _WIN32
 static LPFN_WSARECVMSG g_wsa_recvmsg = NULL;
+static bool g_kernel_timestamp_enabled = false; // カーネルタイムスタンプが有効か
 #endif
 
 /**
@@ -243,6 +244,31 @@ static SOCKET init_reflector_socket(uint16_t port, int af_hint, int *out_family)
             setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO,
                        (const char *)&timeout_ms, sizeof(timeout_ms));
         }
+
+        // Windows: SIO_TIMESTAMPINGでカーネルタイムスタンプを有効化
+        // Windows 10 1903以降で利用可能
+        {
+            TIMESTAMPING_CONFIG ts_config = {0};
+            ts_config.Flags = TIMESTAMPING_FLAG_RX; // 受信タイムスタンプを有効化
+            ts_config.TxTimestampsBuffered = 0;
+            DWORD bytes_returned = 0;
+
+            if (WSAIoctl(sockfd, SIO_TIMESTAMPING,
+                         &ts_config, sizeof(ts_config),
+                         NULL, 0, &bytes_returned, NULL, NULL) == 0)
+            {
+                g_kernel_timestamp_enabled = true;
+                printf("Kernel timestamping enabled (SIO_TIMESTAMPING)\n");
+            }
+            else
+            {
+                // Windows 10 1903未満では失敗する可能性がある
+                // フォールバック: ユーザースペースタイムスタンプを使用
+                g_kernel_timestamp_enabled = false;
+                fprintf(stderr, "Warning: SIO_TIMESTAMPING not available (error %d); using userspace timestamps\n",
+                        WSAGetLastError());
+            }
+        }
 #endif
 
         // 受信TTL/Hop Limit取得の有効化 (可能な場合)
@@ -294,6 +320,43 @@ static SOCKET init_reflector_socket(uint16_t port, int af_hint, int *out_family)
             (void)setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMP, &ts_opt, sizeof(ts_opt));
         }
 #endif
+
+#ifdef __linux__
+        // SO_BUSY_POLL: ビジーポーリングでレイテンシ削減
+        // NICドライバがNAPIをサポートしている場合に効果的
+#ifdef SO_BUSY_POLL
+        {
+            int busy_poll = STAMP_BUSY_POLL_USEC;
+            if (setsockopt(sockfd, SOL_SOCKET, SO_BUSY_POLL, &busy_poll, sizeof(busy_poll)) < 0)
+            {
+                // 失敗しても致命的ではない（カーネル設定で無効化されている場合がある）
+                DEBUG_LOG("SO_BUSY_POLL not available (error %d)", errno);
+            }
+            else
+            {
+                DEBUG_LOG("SO_BUSY_POLL enabled (%d usec)", busy_poll);
+            }
+        }
+#endif
+
+        // SO_TIMESTAMPING: カーネルレベルの送受信タイムスタンプ
+        // より正確なT2/T3タイムスタンプを取得可能
+#ifdef SO_TIMESTAMPING
+        {
+            int ts_flags = SOF_TIMESTAMPING_RX_SOFTWARE |
+                           SOF_TIMESTAMPING_TX_SOFTWARE |
+                           SOF_TIMESTAMPING_SOFTWARE;
+            if (setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMPING, &ts_flags, sizeof(ts_flags)) < 0)
+            {
+                DEBUG_LOG("SO_TIMESTAMPING not available (error %d)", errno);
+            }
+            else
+            {
+                DEBUG_LOG("SO_TIMESTAMPING enabled");
+            }
+        }
+#endif
+#endif // __linux__
 #endif
 
         // サーバーアドレスの設定
@@ -341,10 +404,16 @@ static SOCKET init_reflector_socket(uint16_t port, int af_hint, int *out_family)
 /**
  * STAMPパケットの反射処理
  * @return 成功時0、エラー時-1
+ *
+ * 注: この関数はホットパスであり、インライン化によりオーバーヘッドを削減する。
+ * GCC属性:
+ *   - always_inline: 関数呼び出しオーバーヘッドを排除
+ *   - hot: キャッシュ最適化のヒント
  */
-static int reflect_packet(SOCKET sockfd, uint8_t *buffer, int send_len,
-                          const struct sockaddr_storage *cliaddr, socklen_t len, uint8_t ttl,
-                          uint32_t t2_sec, uint32_t t2_frac)
+static inline __attribute__((always_inline, hot))
+int reflect_packet(SOCKET sockfd, uint8_t *buffer, int send_len,
+                   const struct sockaddr_storage *cliaddr, socklen_t len, uint8_t ttl,
+                   uint32_t t2_sec, uint32_t t2_frac)
 {
     struct stamp_sender_packet sender;
     struct stamp_reflector_packet *packet;
@@ -387,18 +456,18 @@ static int reflect_packet(SOCKET sockfd, uint8_t *buffer, int send_len,
     packet->mbz_2 = 0; // MBZフィールド
     memset(packet->mbz_3, 0, sizeof(packet->mbz_3));
 
-    // T3: 送信時刻の取得
+    // T3: 送信時刻の取得（sendto()直前で取得してオーバーヘッドを最小化）
+    // 注: パケットヘッダー設定後、sendto()直前でT3を取得することで
+    // T2-T3間の処理時間をより正確に反映する
     if (get_ntp_timestamp(&t3_sec, &t3_frac) != 0)
     {
         fprintf(stderr, "Failed to get T3 timestamp\n");
         return -1;
     }
-
-    // Reflectorの送信タイムスタンプ
     packet->timestamp_sec = t3_sec;
     packet->timestamp_frac = t3_frac;
 
-    // パケットの返送
+    // パケットの返送（T3取得直後に送信）
     ssize_t send_result = sendto(sockfd, (const char *)buffer, (size_t)send_len, 0,
                                  (const struct sockaddr *)cliaddr, len);
     if (send_result < 0)
@@ -419,10 +488,13 @@ static int reflect_packet(SOCKET sockfd, uint8_t *buffer, int send_len,
 /**
  * STAMPパケットの受信（タイムスタンプ付き）
  * @return 受信バイト数、エラー時-1
+ *
+ * 注: この関数はホットパスであり、インライン化によりオーバーヘッドを削減する。
  */
-static int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
-                             struct sockaddr_storage *cliaddr, socklen_t *len, uint8_t *ttl,
-                             uint32_t *t2_sec, uint32_t *t2_frac, int socket_family)
+static inline __attribute__((always_inline, hot))
+int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
+                      struct sockaddr_storage *cliaddr, socklen_t *len, uint8_t *ttl,
+                      uint32_t *t2_sec, uint32_t *t2_frac, int socket_family)
 {
 #ifdef _WIN32
     if (ttl)
@@ -460,17 +532,23 @@ static int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
         return -1;
     }
 
-    // T2: 受信直後にタイムスタンプ取得
+    *len = msg.namelen;
+
+    // カーネルタイムスタンプを抽出（共通関数を使用）
+    bool timestamp_found = false;
     if (t2_sec && t2_frac)
     {
-        get_ntp_timestamp(t2_sec, t2_frac);
+        timestamp_found = extract_kernel_timestamp_windows(&msg, t2_sec, t2_frac);
+        if (!timestamp_found)
+        {
+            get_ntp_timestamp(t2_sec, t2_frac);
+        }
     }
 
-    *len = msg.namelen;
+    // TTL/Hop Limitを取得（reflector固有の処理）
     if (ttl)
     {
         WSACMSGHDR *cmsg;
-        // MinGW WSA_CMSG_NXTHDR マクロの符号変換警告を抑制
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wsign-conversion"
@@ -536,59 +614,46 @@ static int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
 
     *len = msg.msg_namelen;
 
+    // カーネルタイムスタンプを抽出（共通関数を使用）
     bool timestamp_found = false;
-    struct cmsghdr *cmsg;
-    for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg))
+    if (t2_sec && t2_frac)
     {
-#ifdef SCM_TIMESTAMPNS
-        if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMPNS)
+        timestamp_found = extract_kernel_timestamp_linux(&msg, t2_sec, t2_frac);
+        if (!timestamp_found)
         {
-            if (t2_sec && t2_frac)
-            {
-                struct timespec *ts = (struct timespec *)CMSG_DATA(cmsg);
-                timespec_to_ntp(ts, t2_sec, t2_frac);
-                timestamp_found = true;
-            }
+            get_ntp_timestamp(t2_sec, t2_frac);
         }
-#endif
-#ifdef SCM_TIMESTAMP
-        if (!timestamp_found && cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMP)
-        {
-            if (t2_sec && t2_frac)
-            {
-                struct timeval *tv = (struct timeval *)CMSG_DATA(cmsg);
-                timeval_to_ntp(tv, t2_sec, t2_frac);
-                timestamp_found = true;
-            }
-        }
-#endif
-        // IPv4 TTL
-        if (ttl && cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_TTL)
-        {
-            int recv_ttl;
-            memcpy(&recv_ttl, CMSG_DATA(cmsg), sizeof(recv_ttl));
-            if (recv_ttl >= 0 && recv_ttl <= 255)
-            {
-                *ttl = (uint8_t)recv_ttl;
-            }
-        }
-#ifdef IPV6_HOPLIMIT
-        // IPv6 Hop Limit
-        if (ttl && cmsg->cmsg_level == IPPROTO_IPV6 && cmsg->cmsg_type == IPV6_HOPLIMIT)
-        {
-            int recv_hop;
-            memcpy(&recv_hop, CMSG_DATA(cmsg), sizeof(recv_hop));
-            if (recv_hop >= 0 && recv_hop <= 255)
-            {
-                *ttl = (uint8_t)recv_hop;
-            }
-        }
-#endif
     }
 
-    if (!timestamp_found && t2_sec && t2_frac)
+    // TTL/Hop Limitを取得（reflector固有の処理）
+    if (ttl)
     {
-        get_ntp_timestamp(t2_sec, t2_frac);
+        struct cmsghdr *cmsg;
+        for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg))
+        {
+            // IPv4 TTL
+            if (cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_TTL)
+            {
+                int recv_ttl;
+                memcpy(&recv_ttl, CMSG_DATA(cmsg), sizeof(recv_ttl));
+                if (recv_ttl >= 0 && recv_ttl <= 255)
+                {
+                    *ttl = (uint8_t)recv_ttl;
+                }
+            }
+#ifdef IPV6_HOPLIMIT
+            // IPv6 Hop Limit
+            if (cmsg->cmsg_level == IPPROTO_IPV6 && cmsg->cmsg_type == IPV6_HOPLIMIT)
+            {
+                int recv_hop;
+                memcpy(&recv_hop, CMSG_DATA(cmsg), sizeof(recv_hop));
+                if (recv_hop >= 0 && recv_hop <= 255)
+                {
+                    *ttl = (uint8_t)recv_hop;
+                }
+            }
+#endif
+        }
     }
 
     (void)socket_family; // Reserved for future family-specific handling.
