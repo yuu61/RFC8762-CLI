@@ -255,11 +255,8 @@ static int send_stamp_packet(SOCKET sockfd, uint32_t seq,
 /**
  * カーネルタイムスタンプ付きでパケットを受信
  * @return 受信バイト数、エラー時-1
- *
- * 注: この関数はホットパスであり、hot属性によりキャッシュ最適化を促進する。
  */
-static inline __attribute__((hot))
-int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len,
+static inline int recv_with_timestamp(SOCKET sockfd, uint8_t *buffer, size_t buffer_len,
                         struct sockaddr_storage *servaddr, socklen_t *len,
                         uint32_t *t4_sec, uint32_t *t4_frac)
 {

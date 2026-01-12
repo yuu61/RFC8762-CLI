@@ -83,13 +83,15 @@ add_compile_options(
     $<$<CONFIG:Release>:-fprefetch-loop-arrays>    # Generate memory prefetch instructions
     $<$<CONFIG:Release>:-fvariable-expansion-in-unroller> # Variable expansion in loop unrolling
     # Register and scheduling optimization
+    # NOTE: These flags are architecture-specific and most effective on x86_64/amd64.
+    # They increase compilation time but can improve performance for tight loops.
     $<$<CONFIG:Release>:-fweb>                     # Web construction for register allocation
     $<$<CONFIG:Release>:-frename-registers>        # Rename registers to avoid false dependencies
     $<$<CONFIG:Release>:-fschedule-insns>          # Instruction scheduling before register allocation
     $<$<CONFIG:Release>:-fschedule-insns2>         # Instruction scheduling after register allocation
     $<$<CONFIG:Release>:-fsched-pressure>          # Schedule with register pressure
     $<$<CONFIG:Release>:-fschedule-fusion>         # Group similar instructions for execution efficiency
-    $<$<CONFIG:Release>:-fmodulo-sched>            # Modulo scheduling for loops
+    $<$<CONFIG:Release>:-fmodulo-sched>            # Modulo scheduling for loops (x86_64 optimized)
     $<$<CONFIG:Release>:-fmodulo-sched-allow-regmoves> # Allow register moves in modulo scheduling
     # Superblock optimization
     $<$<CONFIG:Release>:-ftracer>                  # Tail duplication to form superblocks

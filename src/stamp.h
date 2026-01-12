@@ -121,6 +121,9 @@ typedef int SOCKET;
 #ifdef _WIN32
 #define WINDOWS_TO_NTP_OFFSET 11644473600ULL
 #define WINDOWS_TICKS_PER_SEC 10000000ULL
+// FILETIME妥当性チェック用閾値: 2000-01-01 00:00:00 UTC
+// (1601年1月1日からの100ナノ秒単位のティック数)
+#define WINDOWS_FILETIME_Y2K_THRESHOLD 125911584000000000ULL
 
 // Windows: SIO_TIMESTAMPING サポート (Windows 10 1903以降)
 // MinGW/MSYS2では定義されていない可能性があるため手動で定義
@@ -455,7 +458,8 @@ static inline bool enable_kernel_timestamping_windows(SOCKET sockfd)
                  &ts_config, sizeof(ts_config),
                  NULL, 0, &bytes_returned, NULL, NULL) == 0)
     {
-        printf("Kernel timestamping enabled (SIO_TIMESTAMPING)\n");
+        // 診断メッセージはstderrに出力（stdoutはアプリケーション出力用）
+        fprintf(stderr, "Kernel timestamping enabled (SIO_TIMESTAMPING)\n");
         return true;
     }
     else
@@ -510,8 +514,7 @@ static inline bool extract_kernel_timestamp_windows(WSAMSG *msg,
                 memcpy(&filetime, WSA_CMSG_DATA(cmsg), sizeof(filetime));
 
                 // 妥当性チェック: 2000年以降のタイムスタンプか確認
-                // 2000-01-01 00:00:00 UTC = 125911584000000000 (100ns ticks since 1601)
-                if (filetime >= 125911584000000000ULL)
+                if (filetime >= WINDOWS_FILETIME_Y2K_THRESHOLD)
                 {
                     // NTPタイムスタンプに変換
                     uint64_t unix_time = (filetime / WINDOWS_TICKS_PER_SEC) - WINDOWS_TO_NTP_OFFSET;
@@ -572,13 +575,9 @@ static inline void timeval_to_ntp(const struct timeval *tv,
  */
 __attribute__((nonnull(1, 2, 3)))
 static inline bool extract_kernel_timestamp_linux(struct msghdr *msg,
-                                                   uint32_t *ntp_sec,
-                                                   uint32_t *ntp_frac)
+                                                   uint32_t *ntp_sec __attribute__((unused)),
+                                                   uint32_t *ntp_frac __attribute__((unused)))
 {
-    // SCM_* マクロが未定義の環境で未使用パラメータ警告を抑制
-    (void)ntp_sec;
-    (void)ntp_frac;
-
     struct cmsghdr *cmsg;
     for (cmsg = CMSG_FIRSTHDR(msg); cmsg != NULL; cmsg = CMSG_NXTHDR(msg, cmsg))
     {

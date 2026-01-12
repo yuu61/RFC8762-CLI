@@ -50,13 +50,14 @@ static bool g_debug_mode = false;
 
 /**
  * ファイアウォールルールを追加（nftables使用）
+ * @param port UDPポート番号
+ * @param family アドレスファミリ（未使用：nftables inet familyがIPv4/IPv6両対応のため）
  * @return 成功時0、エラー時-1
  */
 static int add_firewall_rule(uint16_t port,
                              __attribute__((unused)) int family)
 {
     char cmd[FIREWALL_CMD_BUFSIZE];
-    // nftables inet family handles both IPv4 and IPv6
 
     // root権限チェック
     if (geteuid() != 0)
@@ -390,11 +391,8 @@ static SOCKET init_reflector_socket(uint16_t port, int af_hint, int *out_family)
 /**
  * STAMPパケットの反射処理
  * @return 成功時0、エラー時-1
- *
- * 注: この関数はホットパスであり、hot属性によりキャッシュ最適化を促進する。
  */
-static inline __attribute__((hot))
-int reflect_packet(SOCKET sockfd, uint8_t *buffer, int send_len,
+static inline int reflect_packet(SOCKET sockfd, uint8_t *buffer, int send_len,
                    const struct sockaddr_storage *cliaddr, socklen_t len, uint8_t ttl,
                    uint32_t t2_sec, uint32_t t2_frac)
 {
@@ -471,11 +469,8 @@ int reflect_packet(SOCKET sockfd, uint8_t *buffer, int send_len,
 /**
  * STAMPパケットの受信（タイムスタンプ付き）
  * @return 受信バイト数、エラー時-1
- *
- * 注: この関数はホットパスであり、hot属性によりキャッシュ最適化を促進する。
  */
-static inline __attribute__((hot))
-int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
+static inline int recv_stamp_packet(SOCKET sockfd, uint8_t *buffer, int buffer_len,
                       struct sockaddr_storage *cliaddr, socklen_t *len, uint8_t *ttl,
                       uint32_t *t2_sec, uint32_t *t2_frac,
                       __attribute__((unused)) int socket_family)
