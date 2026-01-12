@@ -268,6 +268,7 @@ static inline int stamp_getopt(int argc, char *const argv[], const char *optstri
     if (p[1] == ':')
     {
         // オプションが引数を要求する場合
+        // arg[2]へのアクセスは arg_len >= 3 により境界チェックされている
         if (arg_len >= 3 && arg[2] != '\0')
         {
             stamp_optarg = (char *)&arg[2];
@@ -285,6 +286,7 @@ static inline int stamp_getopt(int argc, char *const argv[], const char *optstri
     else
     {
         // オプションが引数を要求しない場合: 余分な文字を拒否（例: "-4extra"）
+        // arg[2]へのアクセスは arg_len >= 3 により境界チェックされている
         if (arg_len >= 3 && arg[2] != '\0')
         {
             stamp_optopt = opt;
@@ -574,6 +576,13 @@ static inline int resolve_address_list(const char *host, uint16_t port, int af_h
 
 /**
  * ホスト名/IPアドレスを解決してsockaddr_storageに格納
+ *
+ * 注意: この関数はgetaddrinfo()が返すリストから最初にマッチする
+ * IPv4/IPv6アドレスを返します。接続試行によるフォールバック
+ * （例: IPv6接続失敗時にIPv4を試す）は実装していません。
+ * 接続フォールバックが必要な場合は、resolve_address_list()を使用し、
+ * 呼び出し元で各アドレスへの接続を順に試してください。
+ *
  * @param af_hint AF_UNSPEC=自動, AF_INET, AF_INET6
  * @return 成功時0、エラー時-1
  */
@@ -591,7 +600,7 @@ static inline int resolve_address(const char *host, uint16_t port, int af_hint,
         return -1;
     }
 
-    // getaddrinfo()が返すアドレスリストを順に処理
+    // 最初にマッチするIPv4/IPv6アドレスを返す（接続試行なし）
     for (rp = result; rp != NULL; rp = rp->ai_next)
     {
         if (rp->ai_family == AF_INET || rp->ai_family == AF_INET6)
