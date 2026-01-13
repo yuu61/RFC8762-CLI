@@ -22,23 +22,29 @@ jobs:
 
             - name: Setup GCC 14
               run: |
-                  sudo apt update
-                  sudo apt install -y gcc-14
+                sudo apt update
+                sudo apt install -y gcc-14
 
             - name: Initialize CodeQL
               uses: github/codeql-action/init@v4
               with:
-                  languages: cpp
+                languages: cpp
+                queries: security-and-quality
+                build-mode: manual
 
             - name: Configure CMake
               run: |
-                  cmake -B build/ci \
+                cmake -B build/ci \
                     -DCMAKE_BUILD_TYPE=Release \
                     -DCMAKE_C_COMPILER=gcc-14 \
-                    -DPORTABLE_BUILD=ON
+                    -DPORTABLE_BUILD=ON \
+                    -DENABLE_LTO=OFF \
+                    -DENABLE_PGO_GENERATE=OFF \
+                    -DENABLE_PGO_USE=OFF \
+                    -DENABLE_GRAPHITE=OFF
 
             - name: Build for CodeQL
-              run: cmake --build build/ci -j$(nproc)
+              run: cmake --build build/ci -j"$(nproc)"
 
             - name: Perform CodeQL Analysis
               uses: github/codeql-action/analyze@v4
