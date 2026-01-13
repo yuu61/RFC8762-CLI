@@ -1,0 +1,31 @@
+{
+  "configurations": [
+    {
+      "name": "Windows (MSYS2)",
+      "includePath": ["${workspaceFolder}/**", "C:/msys64/ucrt64/include/**"],
+      "defines": ["_DEBUG", "_WIN32", "__GNUC__"],
+      "compilerPath": "C:/msys64/ucrt64/bin/gcc.exe",
+      "cStandard": "c17",
+      "cppStandard": "c++17",
+      "intelliSenseMode": "gcc-x64",
+      "browse": {
+        "path": ["${workspaceFolder}", "C:/msys64/ucrt64/include"],
+        "limitSymbolsToIncludedHeaders": true
+      }
+    },
+    {
+      "name": "Linux",
+      "includePath": ["${workspaceFolder}/**", "/usr/include/**"],
+      "defines": ["_DEBUG", "__GNUC__"],
+      "compilerPath": "/usr/bin/gcc",
+      "cStandard": "c17",
+      "cppStandard": "c++17",
+      "intelliSenseMode": "linux-gcc-x64",
+      "browse": {
+        "path": ["${workspaceFolder}", "/usr/include"],
+        "limitSymbolsToIncludedHeaders": true
+      }
+    }
+  ],
+  "version": 4
+}
