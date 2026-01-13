@@ -237,13 +237,10 @@ static SOCKET init_reflector_socket(uint16_t port, int af_hint, int *out_family)
 		// IPv6デュアルスタック設定
 		if (family == AF_INET6 && af_hint == AF_UNSPEC)
 		{
-			int v6only = 0; // デュアルスタック有効化
 #ifdef IPV6_V6ONLY
-			if (setsockopt(sockfd, IPPROTO_IPV6, IPV6_V6ONLY,
-				       (const char *)&v6only, sizeof(v6only)) < 0)
-			{
-				// デュアルスタック非対応の場合は無視
-			}
+			int v6only = 0;
+			(void)setsockopt(sockfd, IPPROTO_IPV6, IPV6_V6ONLY,
+					 (const char *)&v6only, sizeof(v6only));
 #endif
 		}
 
