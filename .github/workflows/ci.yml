@@ -77,9 +77,9 @@ jobs:
                   msystem: UCRT64
                   update: true
                   install: >-
-                      mingw-w64-ucrt-x86_64-gcc
-                      mingw-w64-ucrt-x86_64-cmake
-                      mingw-w64-ucrt-x86_64-ninja
+                      mingw-w64-ucrt-x86_64-gcc --needed
+                      mingw-w64-ucrt-x86_64-cmake --needed
+                      mingw-w64-ucrt-x86_64-ninja --needed
 
             - name: Verify GCC version (Linux)
               if: runner.os == 'Linux'
