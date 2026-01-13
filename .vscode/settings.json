@@ -1,0 +1,49 @@
+{
+  "files.encoding": "utf8",
+  "files.eol": "\n",
+
+  // インデント設定（ベストプラクティス）
+  "editor.insertSpaces": true,
+  "editor.tabSize": 4,
+  "editor.detectIndentation": false,
+  "editor.renderWhitespace": "boundary",
+
+  // フォーマット設定
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.formatOnSave": true,
+  "editor.formatOnPaste": false,
+
+  // 空白の自動削除
+  "files.trimTrailingWhitespace": true,
+  "files.trimFinalNewlines": true,
+  "files.insertFinalNewline": true,
+
+  // 言語別設定（Linux Kernelスタイル）
+  "[c]": {
+    "editor.defaultFormatter": "ms-vscode.cpptools",
+    "editor.insertSpaces": false,
+    "editor.tabSize": 8
+  },
+  "[h]": {
+    "editor.defaultFormatter": "ms-vscode.cpptools",
+    "editor.insertSpaces": false,
+    "editor.tabSize": 8
+  },
+  "[json]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.tabSize": 2
+  },
+  "[jsonc]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.tabSize": 2
+  },
+  "[markdown]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.tabSize": 2,
+    "files.trimTrailingWhitespace": false
+  },
+  "[yaml]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.tabSize": 2
+  }
+}

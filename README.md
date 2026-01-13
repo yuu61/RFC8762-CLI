@@ -171,6 +171,7 @@ RTT min/avg/max = 0.300/0.300/0.300 ms
 ```
 
 ### ファイアウォール自動設定（Linux/UNIX）
+
 Reflector を root 権限で起動すると、iptables/ip6tables で UDP ポート許可ルールを自動追加・削除します。`system()` を利用するため、運用環境では内容を確認し、不要であれば非 root で起動してください。
 
 ### IPv6 での使用
@@ -210,6 +211,10 @@ Reflector を root 権限で起動すると、iptables/ip6tables で UDP ポー�
 
 ```bash
 RFC8762/
+├── .vscode/              # VS Code 設定
+│   ├── c_cpp_properties.json  # C/C++ IntelliSense設定
+│   ├── extensions.json        # 推奨拡張機能
+│   └── settings.json          # エディタ設定
 ├── CMakeLists.txt        # CMake ビルド設定
 ├── CMakePresets.json     # CMake プリセット
 ├── README.md             # このファイル
@@ -223,6 +228,35 @@ RFC8762/
 └── tests/
     └── test_stamp.c      # ユニットテスト
 ```
+
+## 開発環境 (VS Code)
+
+このプロジェクトはVS Codeでの開発を推奨しています。
+
+### 推奨拡張機能
+
+プロジェクトを開くと、以下の拡張機能がインストール推奨されます:
+
+- **C/C++ Extension Pack** (`ms-vscode.cpptools-extension-pack`) - IntelliSense、デバッグ
+- **CMake Tools** (`ms-vscode.cmake-tools`) - CMakeプロジェクト管理
+- **Prettier** (`esbenp.prettier-vscode`) - JSON/Markdown/YAMLのフォーマット
+- **Git Graph** (`mhutchie.git-graph`) - Gitブランチの可視化
+- **GitHub Actions** (`github.vscode-github-actions`) - ワークフローの編集・実行
+
+### コードスタイル
+
+| 言語      | インデント  | スタイル             |
+| --------- | ----------- | -------------------- |
+| C/H       | タブ（8幅） | Linux Kernelスタイル |
+| JSON/YAML | 2スペース   | Prettier             |
+| Markdown  | 2スペース   | Prettier             |
+
+### フォーマット
+
+- **保存時自動フォーマット**: 有効
+- **手動フォーマット**: `Shift + Alt + F` (Windows) / `Shift + Option + F` (Mac)
+- **改行コード**: LF（Unix形式）
+- **文字コード**: UTF-8
 
 ## 技術仕様
 
@@ -241,15 +275,15 @@ RFC8762/
 
 ### 出力カラムの説明
 
-| カラム | 説明 |
-|--------|------|
-| Seq | シーケンス番号 |
-| Fwd(ms) | 往路遅延（Sender → Reflector） |
-| Bwd(ms) | 復路遅延（Reflector → Sender） |
-| RTT(ms) | 往復遅延（Fwd + Bwd） |
+| カラム     | 説明                                        |
+| ---------- | ------------------------------------------- |
+| Seq        | シーケンス番号                              |
+| Fwd(ms)    | 往路遅延（Sender → Reflector）              |
+| Bwd(ms)    | 復路遅延（Reflector → Sender）              |
+| RTT(ms)    | 往復遅延（Fwd + Bwd）                       |
 | Offset(ms) | クロックオフセット（Reflectorの時計のずれ） |
-| [adj_Fwd] | オフセット補正した往路遅延（参考値） |
-| [adj_Bwd] | オフセット補正した復路遅延（参考値） |
+| [adj_Fwd]  | オフセット補正した往路遅延（参考値）        |
+| [adj_Bwd]  | オフセット補正した復路遅延（参考値）        |
 
 **補正値の意味**: SenderとReflectorの時計が完全に同期していない場合、Fwd/Bwdの値は非対称になります。`[adj_Fwd]`と`[adj_Bwd]`は、クロックオフセットを考慮した推定値で、理想的には対称な値になります。
 
