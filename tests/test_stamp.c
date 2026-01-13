@@ -1165,42 +1165,37 @@ static void test_statistics_calculation(void)
                        "single sample min == max");
 }
 
+// パケットロス計算ヘルパー関数（テスト用）
+static double calculate_packet_loss(uint32_t sent, uint32_t received)
+{
+    if (sent == 0)
+    {
+        return 0.0;
+    }
+    return 100.0 * (double)(sent - received) / (double)sent;
+}
+
 static void test_packet_loss_calculation(void)
 {
     // 0% ロス
-    {
-        uint32_t sent = 100, received = 100;
-        double loss = (sent > 0) ? (100.0 * (double)(sent - received) / (double)sent) : 0;
-        EXPECT_NEAR_DOUBLE(loss, 0.0, 0.001, "packet loss 0%");
-    }
+    EXPECT_NEAR_DOUBLE(calculate_packet_loss(100, 100), 0.0, 0.001,
+                       "packet loss 0%");
 
     // 5% ロス
-    {
-        uint32_t sent = 100, received = 95;
-        double loss = (sent > 0) ? (100.0 * (double)(sent - received) / (double)sent) : 0;
-        EXPECT_NEAR_DOUBLE(loss, 5.0, 0.001, "packet loss 5%");
-    }
+    EXPECT_NEAR_DOUBLE(calculate_packet_loss(100, 95), 5.0, 0.001,
+                       "packet loss 5%");
 
     // 50% ロス
-    {
-        uint32_t sent = 100, received = 50;
-        double loss = (sent > 0) ? (100.0 * (double)(sent - received) / (double)sent) : 0;
-        EXPECT_NEAR_DOUBLE(loss, 50.0, 0.001, "packet loss 50%");
-    }
+    EXPECT_NEAR_DOUBLE(calculate_packet_loss(100, 50), 50.0, 0.001,
+                       "packet loss 50%");
 
     // 100% ロス
-    {
-        uint32_t sent = 100, received = 0;
-        double loss = (sent > 0) ? (100.0 * (double)(sent - received) / (double)sent) : 0;
-        EXPECT_NEAR_DOUBLE(loss, 100.0, 0.001, "packet loss 100%");
-    }
+    EXPECT_NEAR_DOUBLE(calculate_packet_loss(100, 0), 100.0, 0.001,
+                       "packet loss 100%");
 
-    // 送信0の場合
-    {
-        uint32_t sent = 0, received = 0;
-        double loss = (sent > 0) ? (100.0 * (double)(sent - received) / (double)sent) : 0;
-        EXPECT_NEAR_DOUBLE(loss, 0.0, 0.001, "packet loss sent=0");
-    }
+    // 送信0の場合（ゼロ除算防止）
+    EXPECT_NEAR_DOUBLE(calculate_packet_loss(0, 0), 0.0, 0.001,
+                       "packet loss sent=0");
 }
 
 // =============================================================================
