@@ -1,0 +1,123 @@
+# Linux Kernel style for RFC 8762 STAMP implementation
+# 厳格モード: フォーマット違反はすべて自動修正される
+BasedOnStyle: LLVM
+IndentWidth: 8
+UseTab: Always
+TabWidth: 8
+BreakBeforeBraces: Linux
+ColumnLimit: 0
+
+# ポインタ・参照の配置: 名前側に寄せる (char *ptr)
+PointerAlignment: Right
+
+# 引数・パラメータの整列: 開き括弧位置で揃える
+AlignAfterOpenBracket: Align
+BinPackArguments: false
+BinPackParameters: false
+
+# マクロ定義の値位置を揃える (#define FOO  1)
+AlignConsecutiveMacros: Consecutive
+
+# 構造体メンバの代入位置 (揃えない — 差分ノイズ防止)
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignConsecutiveBitFields: Consecutive
+
+# エスケープ改行 (\) の位置を左揃え
+AlignEscapedNewlines: Left
+
+# 多項演算子のオペランド整列
+AlignOperands: Align
+
+# 末尾コメントの整列
+AlignTrailingComments: true
+
+# --- 1行化の全面禁止 (可読性最優先) ---
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+AllowShortEnumsOnASingleLine: false
+AllowAllArgumentsOnNextLine: false
+AllowAllParametersOfDeclarationOnNextLine: false
+
+# 制御文にブレース自動挿入 (clang-format 15+)
+# if/else/for/while/do の本体が1文でも {} を強制
+InsertBraces: true
+
+# ファイル末尾に改行を保証 (clang-format 16+)
+InsertNewlineAtEOF: true
+
+# 制御文の前にスペース: if (x), while (x)
+SpaceBeforeParens: ControlStatements
+
+# キャストの後にスペースなし: (int)x
+SpaceAfterCStyleCast: false
+
+# 代入演算子の前後にスペース強制
+SpaceBeforeAssignmentOperators: true
+
+# 行コメント (// xxx) のスペース: 正確に1つ
+SpacesInLineCommentPrefix:
+  Minimum: 1
+  Maximum: -1
+
+# インクルードの自動ソート (大文字小文字区別)
+SortIncludes: CaseSensitive
+IncludeBlocks: Preserve
+IncludeCategories:
+  # 1. 自プロジェクトヘッダ ("stamp.h", "../src/stamp.h")
+  - Regex: '".*"'
+    Priority: 1
+  # 2. 標準Cライブラリ・POSIX (<stdio.h>, <unistd.h> 等)
+  - Regex: '<[a-z_]+\.h>'
+    Priority: 2
+  # 3. Linux固有ヘッダ (<linux/*, <net/*, <sys/*)
+  - Regex: '<(linux|net|sys)/'
+    Priority: 3
+  # 4. WinSock2 コア (windows.h より先にインクルード必須)
+  - Regex: '<(winsock2|ws2def)\.h>'
+    Priority: 4
+  # 5. WinSock 拡張 (winsock2.h の後)
+  - Regex: '<(mswsock|ws2tcpip|mstcpip)\.h>'
+    Priority: 5
+  # 6. Windows.h (WinSock 系ヘッダーの後にインクルード)
+  - Regex: '<windows\.h>'
+    Priority: 6
+  # 7. その他
+  - Regex: '.*'
+    Priority: 7
+
+# 継続行のインデント幅
+ContinuationIndentWidth: 8
+
+# プリプロセッサディレクティブのインデント
+IndentPPDirectives: None
+
+# switch-case: caseをインデントしない (Linux Kernel style)
+IndentCaseLabels: false
+IndentCaseBlocks: false
+
+# goto ラベル: 最左寄せ
+IndentGotoLabels: false
+
+# 空行の制御: 連続空行は最大1行、関数先頭の空行除去
+MaxEmptyLinesToKeep: 1
+KeepEmptyLinesAtTheStartOfBlocks: false
+
+# 関数の戻り値型を同じ行に保持
+AlwaysBreakAfterReturnType: None
+
+# 文字列リテラルの改行を許容しない
+BreakStringLiterals: false
+
+# ペナルティ設定 (改行位置の優先制御)
+PenaltyBreakAssignment: 25
+PenaltyBreakBeforeFirstCallParameter: 50
+PenaltyBreakComment: 300
+PenaltyBreakFirstLessLess: 120
+PenaltyBreakOpenParenthesis: 0
+PenaltyBreakString: 1000
+PenaltyExcessCharacter: 1000000
+PenaltyReturnTypeOnItsOwnLine: 200

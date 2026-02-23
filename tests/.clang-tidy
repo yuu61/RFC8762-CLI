@@ -1,0 +1,21 @@
+# テスト専用 clang-tidy 設定
+# 親ディレクトリの .clang-tidy を継承し、関数サイズ・複雑度のみ緩和する。
+# テスト関数は多数のアサーションを含むため、プロダクションコードと
+# 同じ閾値を適用すると過剰な分割を強いられる。
+
+InheritParentConfig: true
+
+CheckOptions:
+  # 認知的複雑度: 25 → 無制限 (テストは線形なアサーション列が中心)
+  - key: readability-function-cognitive-complexity.Threshold
+    value: '200'
+
+  # 関数サイズ: 大幅に緩和
+  - key: readability-function-size.LineThreshold
+    value: '500'
+  - key: readability-function-size.StatementThreshold
+    value: '300'
+  - key: readability-function-size.BranchThreshold
+    value: '100'
+  - key: readability-function-size.VariableThreshold
+    value: '60'

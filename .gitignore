@@ -46,7 +46,6 @@ tmpclaude-*-cwd
 # Tool metadata
 compile_commands.json
 *.clangd
-*.clang-tidy
 
 # Dependency caches
 .ccls-cache/
