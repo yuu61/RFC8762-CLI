@@ -2,23 +2,73 @@
   "version": 6,
   "configurePresets": [
     {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
       "name": "debug",
       "displayName": "Debug",
-      "generator": "Ninja",
+      "inherits": "base",
       "binaryDir": "${sourceDir}/build/debug",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_C_COMPILER": "gcc"
+        "CMAKE_BUILD_TYPE": "Debug"
       }
     },
     {
       "name": "release",
       "displayName": "Release",
-      "generator": "Ninja",
+      "inherits": "base",
       "binaryDir": "${sourceDir}/build/release",
+      "installDir": "${sourceDir}/build/install",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_C_COMPILER": "gcc"
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "asan",
+      "displayName": "Debug + ASan/UBSan",
+      "inherits": "debug",
+      "binaryDir": "${sourceDir}/build/asan",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "CMAKE_C_FLAGS_DEBUG": "-g -O0 -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all",
+        "CMAKE_EXE_LINKER_FLAGS_DEBUG": "-fsanitize=address,undefined"
+      }
+    },
+    {
+      "name": "portable",
+      "displayName": "Release (Portable)",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/portable",
+      "cacheVariables": {
+        "PORTABLE_BUILD": "ON"
+      }
+    },
+    {
+      "name": "pgo-generate",
+      "displayName": "Release (PGO Generate)",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/pgo-generate",
+      "cacheVariables": {
+        "ENABLE_PGO_GENERATE": "ON"
+      }
+    },
+    {
+      "name": "pgo-use",
+      "displayName": "Release (PGO Use)",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/pgo-use",
+      "cacheVariables": {
+        "ENABLE_PGO_USE": "ON"
       }
     }
   ],
@@ -30,6 +80,22 @@
     {
       "name": "release",
       "configurePreset": "release"
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan"
+    },
+    {
+      "name": "portable",
+      "configurePreset": "portable"
+    },
+    {
+      "name": "pgo-generate",
+      "configurePreset": "pgo-generate"
+    },
+    {
+      "name": "pgo-use",
+      "configurePreset": "pgo-use"
     }
   ],
   "testPresets": [
@@ -42,6 +108,15 @@
       "name": "release",
       "configurePreset": "release",
       "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "output": { "outputOnFailure": true },
+      "environment": {
+        "ASAN_OPTIONS": "detect_leaks=1:detect_stack_use_after_return=1",
+        "UBSAN_OPTIONS": "print_stacktrace=1"
+      }
     }
   ]
 }
