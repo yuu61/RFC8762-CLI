@@ -8,4 +8,4 @@ Makefile text eol=lf
 *.sh text eol=lf
 
 # Prevent edits without an explicit Git LFS lock
-docs/RFC8762.txt lockable
+docs/RFC/ lockable
