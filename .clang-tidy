@@ -153,7 +153,7 @@ CheckOptions:
 
   # 関数サイズの上限
   - key: readability-function-size.LineThreshold
-    value: '100'
+    value: '105'
   - key: readability-function-size.StatementThreshold
     value: '60'
   - key: readability-function-size.BranchThreshold

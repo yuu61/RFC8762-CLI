@@ -1095,7 +1095,9 @@ static void print_reflected_info(
 }
 
 /**
- * 1パケット分の受信・反射処理
+ * 1パケット分の受信・反射処理 (RFC 8762 Section 4.2)
+ *
+ * 受信→バリデーション→パディング→応答送信の4段階で処理する。
  */
 __attribute__((hot)) static void handle_one_packet(
 	SOCKET sockfd,
@@ -1108,6 +1110,7 @@ __attribute__((hot)) static void handle_one_packet(
 	uint32_t t2_sec = 0;
 	uint32_t t2_frac = 0;
 
+	/* Step 1: パケット受信（HW/SW タイムスタンプ付き） */
 	int n = recv_stamp_packet(sockfd,
 				  buffer,
 				  buffer_size,
@@ -1152,6 +1155,7 @@ __attribute__((hot)) static void handle_one_packet(
 	}
 #endif
 
+	/* Step 2: 入力バリデーション（Error Estimate・パケット長・TTL） */
 	enum stamp_reflector_input_check_result input_check =
 		stamp_check_reflector_input(buffer, n, ttl);
 
@@ -1177,6 +1181,7 @@ __attribute__((hot)) static void handle_one_packet(
 		return;
 	}
 
+	/* Step 3: 規定サイズ未満のパケットをゼロパディング */
 	int send_len = n;
 	if (send_len < STAMP_BASE_PACKET_SIZE) {
 		fprintf(stderr,
@@ -1190,6 +1195,7 @@ __attribute__((hot)) static void handle_one_packet(
 		send_len = STAMP_BASE_PACKET_SIZE;
 	}
 
+	/* Step 4: 応答パケットを構築して送信元へ返送 */
 	if (reflect_packet(sockfd,
 			   buffer,
 			   send_len,
