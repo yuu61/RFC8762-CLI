@@ -235,7 +235,7 @@ static void test_byte_order(void)
 	// seq_num: verify actual big-endian byte layout
 	pkt.seq_num = htonl(0x01020304);
 	{
-		uint8_t *bytes = (uint8_t *)&pkt.seq_num;
+		const uint8_t *bytes = (const uint8_t *)&pkt.seq_num;
 		EXPECT_EQ_ULL(bytes[0], 0x01, "seq_num MSB");
 		EXPECT_EQ_ULL(bytes[1], 0x02, "seq_num byte 1");
 		EXPECT_EQ_ULL(bytes[2], 0x03, "seq_num byte 2");
@@ -245,7 +245,7 @@ static void test_byte_order(void)
 	// timestamp_sec: verify actual big-endian byte layout
 	pkt.timestamp_sec = htonl(0x12345678);
 	{
-		uint8_t *b = (uint8_t *)&pkt.timestamp_sec;
+		const uint8_t *b = (const uint8_t *)&pkt.timestamp_sec;
 		EXPECT_EQ_ULL(b[0], 0x12, "timestamp_sec byte[0]");
 		EXPECT_EQ_ULL(b[1], 0x34, "timestamp_sec byte[1]");
 		EXPECT_EQ_ULL(b[2], 0x56, "timestamp_sec byte[2]");
@@ -255,7 +255,7 @@ static void test_byte_order(void)
 	// timestamp_frac: verify actual big-endian byte layout
 	pkt.timestamp_frac = htonl(0xABCDEF00);
 	{
-		uint8_t *b = (uint8_t *)&pkt.timestamp_frac;
+		const uint8_t *b = (const uint8_t *)&pkt.timestamp_frac;
 		EXPECT_EQ_ULL(b[0], 0xAB, "timestamp_frac byte[0]");
 		EXPECT_EQ_ULL(b[1], 0xCD, "timestamp_frac byte[1]");
 		EXPECT_EQ_ULL(b[2], 0xEF, "timestamp_frac byte[2]");
@@ -265,7 +265,7 @@ static void test_byte_order(void)
 	// error_estimate: verify actual big-endian byte layout (16-bit)
 	pkt.error_estimate = htons(0xABCD);
 	{
-		uint8_t *bytes = (uint8_t *)&pkt.error_estimate;
+		const uint8_t *bytes = (const uint8_t *)&pkt.error_estimate;
 		EXPECT_EQ_ULL(bytes[0], 0xAB, "error_estimate MSB");
 		EXPECT_EQ_ULL(bytes[1], 0xCD, "error_estimate LSB");
 	}
@@ -1674,8 +1674,8 @@ static void test_rtt_calculation(void)
 	EXPECT_NEAR_DOUBLE(rtt, 3.0, 0.001, "RTT asymmetric total 3ms");
 
 	// ケース3: クロックオフセットあり
-	// T1=0, T2=0.002, T3=0.003, T4=0.002
-	fwd = stamp_forward_delay(0.0, 0.002);
+	// T1=0, T2=0.002, T3=0.003, T4=0.002（fwdは同値だが異なるテストケース）
+	fwd = stamp_forward_delay(0.0, 0.002); // cppcheck-suppress redundantAssignment
 	bwd = stamp_backward_delay(0.003, 0.002);
 	rtt = stamp_rtt(fwd, bwd);
 	offset = stamp_clock_offset(0.0, 0.002, 0.003, 0.002);
@@ -1782,7 +1782,7 @@ static void test_sender_packet_fields(void)
 
 	// フィールド検証: バイトレベルで big-endian を確認
 	{
-		uint8_t *b = (uint8_t *)&pkt.seq_num;
+		const uint8_t *b = (const uint8_t *)&pkt.seq_num;
 		EXPECT_EQ_ULL(b[0], 0x00, "sender seq_num byte[0]");
 		EXPECT_EQ_ULL(b[1], 0x00, "sender seq_num byte[1]");
 		EXPECT_EQ_ULL(b[2],
@@ -1791,7 +1791,7 @@ static void test_sender_packet_fields(void)
 		EXPECT_EQ_ULL(b[3], 0x39, "sender seq_num byte[3]");
 	}
 	{
-		uint8_t *b = (uint8_t *)&pkt.error_estimate;
+		const uint8_t *b = (const uint8_t *)&pkt.error_estimate;
 		EXPECT_EQ_ULL(
 			b[0],
 			0x00,
@@ -1826,7 +1826,7 @@ static void test_sender_packet_fields(void)
 	// タイムスタンプフィールド: バイトレベル検証
 	pkt.timestamp_sec = htonl(0xDEADBEEF);
 	{
-		uint8_t *b = (uint8_t *)&pkt.timestamp_sec;
+		const uint8_t *b = (const uint8_t *)&pkt.timestamp_sec;
 		EXPECT_EQ_ULL(b[0], 0xDE, "sender timestamp_sec byte[0]");
 		EXPECT_EQ_ULL(b[1], 0xAD, "sender timestamp_sec byte[1]");
 		EXPECT_EQ_ULL(b[2], 0xBE, "sender timestamp_sec byte[2]");
@@ -1834,7 +1834,7 @@ static void test_sender_packet_fields(void)
 	}
 	pkt.timestamp_frac = htonl(0xCAFEBABE);
 	{
-		uint8_t *b = (uint8_t *)&pkt.timestamp_frac;
+		const uint8_t *b = (const uint8_t *)&pkt.timestamp_frac;
 		EXPECT_EQ_ULL(b[0], 0xCA, "sender timestamp_frac byte[0]");
 		EXPECT_EQ_ULL(b[1], 0xFE, "sender timestamp_frac byte[1]");
 		EXPECT_EQ_ULL(b[2], 0xBA, "sender timestamp_frac byte[2]");
@@ -1882,20 +1882,20 @@ static void test_reflector_packet_fields(void)
 	// 検証: バイトレベルで big-endian を確認
 	// seq_num = htonl(42) = 0x0000002A big-endian
 	{
-		uint8_t *b = (uint8_t *)&reflector.seq_num;
+		const uint8_t *b = (const uint8_t *)&reflector.seq_num;
 		EXPECT_EQ_ULL(b[0], 0x00, "reflector seq_num byte[0]");
 		EXPECT_EQ_ULL(b[1], 0x00, "reflector seq_num byte[1]");
 		EXPECT_EQ_ULL(b[2], 0x00, "reflector seq_num byte[2]");
 		EXPECT_EQ_ULL(b[3], 0x2A, "reflector seq_num byte[3]");
 	}
 	{
-		uint8_t *b = (uint8_t *)&reflector.sender_seq_num;
+		const uint8_t *b = (const uint8_t *)&reflector.sender_seq_num;
 		EXPECT_EQ_ULL(b[0], 0x00, "reflector sender_seq_num byte[0]");
 		EXPECT_EQ_ULL(b[3], 0x2A, "reflector sender_seq_num byte[3]");
 	}
 	// sender_ts_sec = htonl(0x12345678)
 	{
-		uint8_t *b = (uint8_t *)&reflector.sender_ts_sec;
+		const uint8_t *b = (const uint8_t *)&reflector.sender_ts_sec;
 		EXPECT_EQ_ULL(b[0], 0x12, "reflector sender_ts_sec byte[0]");
 		EXPECT_EQ_ULL(b[1], 0x34, "reflector sender_ts_sec byte[1]");
 		EXPECT_EQ_ULL(b[2], 0x56, "reflector sender_ts_sec byte[2]");
@@ -1903,7 +1903,7 @@ static void test_reflector_packet_fields(void)
 	}
 	// sender_ts_frac = htonl(0xABCDEF00)
 	{
-		uint8_t *b = (uint8_t *)&reflector.sender_ts_frac;
+		const uint8_t *b = (const uint8_t *)&reflector.sender_ts_frac;
 		EXPECT_EQ_ULL(b[0], 0xAB, "reflector sender_ts_frac byte[0]");
 		EXPECT_EQ_ULL(b[1], 0xCD, "reflector sender_ts_frac byte[1]");
 		EXPECT_EQ_ULL(b[2], 0xEF, "reflector sender_ts_frac byte[2]");
@@ -1911,7 +1911,7 @@ static void test_reflector_packet_fields(void)
 	}
 	// sender_err_est = htons(ERROR_ESTIMATE_DEFAULT)
 	{
-		uint8_t *b = (uint8_t *)&reflector.sender_err_est;
+		const uint8_t *b = (const uint8_t *)&reflector.sender_err_est;
 		EXPECT_EQ_ULL(b[0], 0x00, "reflector sender_err_est byte[0]");
 		EXPECT_EQ_ULL(b[1], 0x01, "reflector sender_err_est byte[1]");
 	}

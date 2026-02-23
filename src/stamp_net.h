@@ -255,7 +255,7 @@ __attribute__((nonnull(1, 4, 5), cold)) static inline int stamp_resolve_address(
 	socklen_t *out_addrlen)
 {
 	struct addrinfo *result;
-	struct addrinfo *rp;
+	const struct addrinfo *rp;
 
 	if (stamp_resolve_address_list(host, port, af_hint, &result) != 0) {
 		return -1;

@@ -55,62 +55,74 @@ sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 14
 
 ## ビルド方法
 
-### Debug ビルド
+すべてのビルドは CMake プリセットで管理されています。
 
 ```bash
-cmake --preset debug
-cmake --build --preset debug
+cmake --preset <preset>           # 構成
+cmake --build --preset <preset>   # ビルド
+ctest --preset <preset>           # テスト（対応するプリセットがある場合）
 ```
 
-### Release ビルド
+### プリセット一覧
+
+| プリセット     | 用途                                  | テスト                   |
+| -------------- | ------------------------------------- | ------------------------ |
+| `debug`        | デバッグビルド（`-O0 -g`）            | `ctest --preset debug`   |
+| `release`      | リリースビルド（`-O2`、LTO 有効）     | `ctest --preset release` |
+| `asan`         | ASan/UBSan 付きデバッグ（Linux のみ） | `ctest --preset asan`    |
+| `portable`     | 配布用（`-march=native` 無効）        | -                        |
+| `pgo-generate` | PGO プロファイル生成（ステップ 1）    | -                        |
+| `pgo-use`      | PGO 最適化ビルド（ステップ 2）        | -                        |
+
+### よく使うコマンド
 
 ```bash
-cmake --preset release
-cmake --build --preset release
+# Debug ビルド & テスト
+cmake --preset debug && cmake --build --preset debug && ctest --preset debug
+
+# Release ビルド & テスト
+cmake --preset release && cmake --build --preset release && ctest --preset release
+
+# ASan/UBSan（Linux のみ）
+cmake --preset asan && cmake --build --preset asan && ctest --preset asan
+
+# 配布用ポータブルビルド
+cmake --preset portable && cmake --build --preset portable
 ```
 
-実行ファイルは `build/` ディレクトリに生成されます:
+実行ファイルは `build/<preset>/` に生成されます:
 
-- `build/debug/reflector` - Reflector (デバッグ版)
-- `build/debug/sender` - Sender (デバッグ版)
-- `build/release/reflector` - Reflector (リリース版)
-- `build/release/sender` - Sender (リリース版)
+- `build/<preset>/sender` - Sender
+- `build/<preset>/reflector` - Reflector
 
 ## ビルドオプション
 
-CMake のオプションで追加機能を制御できます。`cmake --preset <preset> -D<OPTION>=ON` の形式で指定します。
+プリセットを使わずに個別オプションを指定する場合は `cmake --preset <preset> -D<OPTION>=ON` の形式で指定します。
 
-| オプション | デフォルト | 説明 |
-| --- | --- | --- |
-| `PORTABLE_BUILD` | OFF | 配布用ポータブルバイナリのビルド（`-march=native` を無効化） |
-| `ENABLE_LTO` | ON | リンク時最適化（ビルド時間とメモリ使用量が増加） |
-| `ENABLE_PGO_GENERATE` | OFF | PGO プロファイルデータ生成（ステップ 1） |
-| `ENABLE_PGO_USE` | OFF | PGO プロファイルデータを使用した最適化（ステップ 2） |
-| `ENABLE_GRAPHITE` | OFF | Graphite 多面体ループ最適化（実験的、ISL 付き GCC が必要） |
-| `ENABLE_REFLECTOR_DEBUG_LOG` | OFF | Reflector の詳細デバッグログを有効化 |
+| オプション                   | デフォルト | 説明                                                       |
+| ---------------------------- | ---------- | ---------------------------------------------------------- |
+| `PORTABLE_BUILD`             | OFF        | 配布用ポータブルバイナリ（`-march=native` を無効化）       |
+| `ENABLE_LTO`                 | ON         | リンク時最適化（ビルド時間とメモリ使用量が増加）           |
+| `ENABLE_PGO_GENERATE`        | OFF        | PGO プロファイルデータ生成（ステップ 1）                   |
+| `ENABLE_PGO_USE`             | OFF        | PGO プロファイルデータを使用した最適化（ステップ 2）       |
+| `ENABLE_GRAPHITE`            | OFF        | Graphite 多面体ループ最適化（実験的、ISL 付き GCC が必要） |
+| `ENABLE_REFLECTOR_DEBUG_LOG` | OFF        | Reflector の詳細デバッグログを有効化                       |
 
 ### PGO (Profile-Guided Optimization) の使い方
 
 ```bash
-# ステップ1: プロファイルデータ生成
-cmake --preset release -DENABLE_PGO_GENERATE=ON
-cmake --build --preset release
-./build/release/sender 127.0.0.1  # ワークロードを実行
+# ステップ1: プロファイルデータ生成用ビルド
+cmake --preset pgo-generate && cmake --build --preset pgo-generate
 
-# ステップ2: プロファイルデータを使用した最適化ビルド
-cmake --preset release -DENABLE_PGO_USE=ON
-cmake --build --preset release
+# ステップ2: 代表的なワークロードを実行してプロファイルを収集
+./build/pgo-generate/reflector &
+./build/pgo-generate/sender 127.0.0.1
+
+# ステップ3: プロファイルデータを使用した最適化ビルド
+cmake --preset pgo-use && cmake --build --preset pgo-use
 ```
 
 > **注意**: プロファイル生成と使用で同じコンパイラバージョンを使用してください。
-
-## テストの実行
-
-```bash
-ctest --preset debug
-# または
-ctest --preset release
-```
 
 ## 静的解析ツールのインストール
 
@@ -155,7 +167,7 @@ clang-format -i src/*.c src/*.h
 clang-tidy -p build/debug src/sender.c
 
 # 全ソースの検査
-clang-tidy -p build/debug src/*c src/*h tests/*c
+clang-tidy -p build/debug src/*.c src/*.h tests/*.c
 
 # 自動修正付き
 clang-tidy -p build/debug --fix src/sender.c
