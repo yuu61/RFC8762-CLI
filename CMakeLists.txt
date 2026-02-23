@@ -1,11 +1,14 @@
 # CMakeLists.txt for RFC 8762 STAMP implementation
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.25)
 project(RFC8762-CLI VERSION 1.0.0 LANGUAGES C)
 
 # C standard settings (gnu17 = C17 + GNU extensions)
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
+
+# Export compile commands for IDE/tooling support (clangd, clang-tidy)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Default build type to Release if not specified
 if(NOT CMAKE_BUILD_TYPE)
@@ -18,7 +21,8 @@ if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
         message(FATAL_ERROR "GCC 14 or later is required. Found: GCC ${CMAKE_C_COMPILER_VERSION}")
     endif()
 else()
-    message(WARNING "This project is optimized for GCC 14+. Other compilers may work but are not officially supported.")
+    message(FATAL_ERROR "This project requires GCC 14+. Detected: ${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION}. "
+                        "GNU extensions and GCC-specific flags are used throughout.")
 endif()
 set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release")
 
@@ -60,10 +64,70 @@ endif()
 add_compile_definitions($<$<BOOL:${ENABLE_REFLECTOR_DEBUG_LOG}>:ENABLE_REFLECTOR_DEBUG_LOG>)
 
 # Compiler flags (GCC 14+)
-# Enhanced warning flags
-add_compile_options(-Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wformat=2)
+# Maximum strictness warning flags
+add_compile_options(
+    # Core warning sets
+    -Wall -Wextra -Wpedantic -Werror
+    # Type safety and conversions
+    -Wconversion                    # Implicit type conversions
+    -Warith-conversion              # Implicit arithmetic conversions
+    -Wfloat-conversion              # Implicit float conversions
+    -Wdouble-promotion              # Implicit float → double promotion
+    -Wcast-qual                     # Casting away const/volatile qualifiers
+    -Wcast-align=strict             # Pointer casts increasing alignment requirement
+    -Wbad-function-cast             # Casting function return to incompatible type
+    # Shadow and scope
+    -Wshadow                        # Variable shadowing
+    -Wnested-externs                # Nested extern declarations
+    # Format string (comprehensive)
+    -Wformat=2                      # Enables -Wformat-security -Wformat-nonliteral -Wformat-y2k
+    -Wformat-overflow=2             # Detect sprintf buffer overflows
+    -Wformat-truncation=2           # Detect snprintf truncation
+    -Wformat-signedness             # Format string signedness mismatch
+    # String/buffer operations
+    -Wstringop-overflow=4           # Maximum level string operation overflow detection
+    -Wstringop-truncation           # Detect strncat/strncpy truncation
+    # Logic and control flow
+    -Wlogical-op                    # Suspicious logical operations (always true/false)
+    -Wduplicated-cond               # Duplicated conditions in if-else chains
+    -Wduplicated-branches           # Duplicated branches in if-else
+    -Wimplicit-fallthrough          # Require explicit fallthrough annotation in switch
+    -Wswitch-enum                   # Switch on enum without handling all values
+    -Wswitch-default                # Switch without default case
+    # Pointer, memory, and array
+    -Wnull-dereference              # Static detection of NULL pointer dereference
+    -Walloc-zero                    # Zero-size memory allocations
+    -Wvla                           # Variable-length array usage
+    -Warray-bounds=2                # Enhanced array bounds checking
+    -Wtrampolines                   # Trampoline generation (security concern)
+    # Declaration quality
+    -Wstrict-prototypes             # Reject old-style function declarations
+    -Wold-style-definition          # Reject old-style function definitions
+    -Wmissing-prototypes            # Missing function prototypes
+    -Wmissing-declarations          # Missing function declarations
+    -Wredundant-decls               # Redundant declarations
+    # Preprocessor and type system
+    -Wundef                         # Undefined macros in #if directives
+    -Wwrite-strings                 # String literals as const char[]
+    -Wdate-time                     # Warn about __DATE__/__TIME__ (reproducibility)
+    # GCC optimization feedback
+    -Wdisabled-optimization         # Function too large for optimization
+    -Wstack-protector               # Stack protector can't be applied
+    -Wattribute-alias=2             # Stricter attribute alias checking
+    # GCC 14 specific
+    -Wflex-array-member-not-at-end  # Flexible array member not at struct end
+    -Wcalloc-transposed-args        # Swapped calloc(size, count) arguments
+)
+# Stack protection (all builds — critical for network-facing applications)
+add_compile_options(-fstack-protector-strong)
+# CFI: Control-Flow Enforcement (x86_64 only, requires Intel CET)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
+    add_compile_options(-fcf-protection)
+endif()
+# Buffer overflow detection (Release only, requires -O1+)
+add_compile_definitions($<$<CONFIG:Release>:_FORTIFY_SOURCE=3>)
 # Debug build
-add_compile_options($<$<CONFIG:Debug>:-g> $<$<CONFIG:Debug>:-O0>)
+add_compile_options($<$<CONFIG:Debug>:-g> $<$<CONFIG:Debug>:-O0> $<$<CONFIG:Debug>:-fno-omit-frame-pointer>)
 # Release build: Maximum optimization
 add_compile_options(
     # Core optimization
@@ -100,9 +164,7 @@ add_compile_options(
     # Global common subexpression elimination
     $<$<CONFIG:Release>:-fgcse-sm>                 # Store motion after GCSE
     $<$<CONFIG:Release>:-fgcse-las>                # Load after store optimization
-    # Table and metadata reduction
-    $<$<CONFIG:Release>:-fno-unwind-tables>        # Remove unwind tables
-    $<$<CONFIG:Release>:-fno-asynchronous-unwind-tables> # Remove async unwind tables
+    # Metadata reduction
     $<$<CONFIG:Release>:-fno-ident>                # Remove .ident directives
     # Constant and data optimization
     $<$<CONFIG:Release>:-fmerge-all-constants>     # Merge identical constants
@@ -123,8 +185,9 @@ if(UNIX AND NOT APPLE)
     )
 endif()
 # Link-time optimization (optional, controlled by ENABLE_LTO)
+# Uses CMake's built-in IPO support for better portability across toolchains
 if(ENABLE_LTO)
-    add_compile_options($<$<CONFIG:Release>:-flto>)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
 endif()
 # Profile-Guided Optimization (PGO)
 if(ENABLE_PGO_GENERATE)
@@ -172,10 +235,8 @@ if(UNIX AND NOT APPLE)
         $<$<CONFIG:Release>:-Wl,-O2>             # Linker optimization
         $<$<CONFIG:Release>:-Wl,--as-needed>     # Only link needed libraries
     )
-endif()
-# Linker flags for LTO (optional)
-if(ENABLE_LTO)
-    add_link_options($<$<CONFIG:Release>:-flto>)
+    # Security hardening: full RELRO + immediate binding
+    add_link_options(-Wl,-z,relro -Wl,-z,now)
 endif()
 
 # Platform-specific settings
@@ -191,25 +252,39 @@ else()
 endif()
 
 # Header files
-set(HEADERS src/stamp.h)
+set(HEADERS
+    src/stamp.h
+    src/stamp_calc.h
+    src/stamp_platform.h
+    src/stamp_protocol.h
+    src/stamp_time.h
+    src/stamp_kernel_ts.h
+    src/stamp_net.h
+)
 
 # Build reflector executable
-add_executable(reflector src/reflector.c ${HEADERS})
+add_executable(reflector src/reflector.c src/stamp_globals.c ${HEADERS})
 target_link_libraries(reflector PRIVATE ${PLATFORM_LIBS})
 target_include_directories(reflector PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
 # Build sender executable
-add_executable(sender src/sender.c ${HEADERS})
+add_executable(sender src/sender.c src/stamp_globals.c ${HEADERS})
 target_link_libraries(sender PRIVATE ${PLATFORM_LIBS})
 target_include_directories(sender PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
+# Install targets
+include(GNUInstallDirs)
+install(TARGETS reflector sender RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 # Enable testing
 enable_testing()
 
 # Build test executable
-add_executable(test_stamp tests/test_stamp.c ${HEADERS})
+add_executable(test_stamp tests/test_stamp.c src/stamp_globals.c ${HEADERS})
 target_link_libraries(test_stamp PRIVATE ${PLATFORM_LIBS})
 target_include_directories(test_stamp PRIVATE ${CMAKE_SOURCE_DIR}/src)
+# テストコードでは argv[] に文字列リテラルを直接代入するため緩和
+target_compile_options(test_stamp PRIVATE -Wno-write-strings)
 
 # Register test
 add_test(NAME stamp_tests COMMAND test_stamp)

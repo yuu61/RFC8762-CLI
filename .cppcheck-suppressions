@@ -1,0 +1,81 @@
+# cppcheck 抑制リスト for RFC 8762 STAMP implementation
+# 厳格モード: 抑制はすべてファイルスコープ限定、理由を明記
+
+# 推奨実行コマンド (厳格):
+#   cppcheck --enable=all --std=c17 \
+#     --suppressions-list=.cppcheck-suppressions \
+#     --library=posix \
+#     --error-exitcode=1 \
+#     --inline-suppr \
+#     --check-level=exhaustive \
+#     --force \
+#     -I src/ src/ tests/
+
+# 対象ソース: src/stamp_globals.c src/sender.c src/reflector.c
+# 対象ヘッダー: src/stamp*.h
+# テスト: tests/test_stamp.c
+
+# 書式: <error-id>[:<filename>[:<line>]]
+
+# ルール: グローバル抑制は最小限。可能な限り <filename> を指定すること。
+#         一時的な抑制は cppcheck-suppress インラインコメントを使用。
+
+# ================================================================
+# グローバル抑制 (プラットフォーム・ツール制約に起因)
+# ================================================================
+
+# システムヘッダーが見つからない警告 (--library=posix で大半解決)
+missingIncludeSystem
+
+# 未使用の抑制ルール自体への警告を抑制 (プラットフォーム依存で不要になる場合)
+unmatchedSuppression
+
+# ================================================================
+# ヘッダーファイル — パケット構造体・タイムスタンプ処理
+# ================================================================
+
+# packed 属性による構造体のアライメント警告
+# RFC 8762 パケット構造体は packed 必須
+objectIndex:src/stamp_protocol.h
+
+# ビットフィールド操作での型幅警告 (NTP タイムスタンプ処理)
+shiftTooManyBitsSigned:src/stamp_time.h
+
+# Windows 専用コードパスのシンボル未定義 (Linux ビルド時)
+preprocessorErrorDirective:src/stamp_platform.h
+
+# ================================================================
+# sender.c / reflector.c — GCC 拡張・セキュリティパス
+# ================================================================
+
+# cleanup 属性 (GCC 拡張) による誤検知
+autoVariables:src/sender.c
+autoVariables:src/reflector.c
+
+# execvp() の argv パラメータに対する const ポインタ誤検知
+# (run_nft_command 内の fork+execvp パターン)
+constParameterPointer:src/reflector.c
+
+# fork() 後の _exit() パスでのリソースリーク誤検知
+memleak:src/reflector.c
+
+# ================================================================
+# stamp_globals.c — グローバル変数定義
+# ================================================================
+
+# volatile sig_atomic_t g_running のシグナルハンドラ間通信
+# (POSIX 準拠の意図的な設計)
+atomicNoOp:src/stamp_globals.c
+
+# ================================================================
+# テストファイル — テスト専用の緩和
+# ================================================================
+
+# テストの static inline ヘルパー関数が未使用と判定される場合
+unusedFunction:tests/test_stamp.c
+
+# stamp_get_timestamp() は cppcheck が特定のプラットフォームパスのみ解析する際に
+# 常に 0 を返すと判定するが、Linux では clock_gettime が失敗しうる防御コーディング
+knownConditionTrueFalse:src/sender.c
+knownConditionTrueFalse:src/reflector.c
+knownConditionTrueFalse:tests/test_stamp.c

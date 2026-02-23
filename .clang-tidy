@@ -1,0 +1,185 @@
+# clang-tidy 設定 for RFC 8762 STAMP implementation
+# 厳格モード: bugprone/cert/analyzer 違反はビルドエラー扱い
+#
+# 使用方法:
+#   clang-tidy -p build/debug src/*.c src/*.h
+#   run-clang-tidy -p build/debug src/
+#
+# 対象ソース: stamp_globals.c, sender.c, reflector.c
+# 対象ヘッダー: stamp.h, stamp_protocol.h, stamp_platform.h,
+#               stamp_time.h, stamp_net.h, stamp_kernel_ts.h, stamp_calc.h
+#
+# Note: GCC 14+ 専用プロジェクト。一部 GNU 拡張は clang-tidy が
+#       認識できない場合がある (compile_commands.json 必須)。
+# GCC 専用警告フラグ (-Walloc-zero, -Wlogical-op 等) を clang が
+# 認識できないため、-Wno-unknown-warning-option で抑制する。
+
+ExtraArgsBefore: ['-Wno-unknown-warning-option']
+
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-reserved-identifier,
+  cert-*,
+  -cert-dcl37-c,
+  -cert-dcl51-c,
+  -cert-dcl51-cpp,
+  -cert-err33-c,
+  clang-analyzer-*,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+  concurrency-*,
+  -concurrency-mt-unsafe,
+  misc-*,
+  -misc-unused-parameters,
+  -misc-include-cleaner,
+  performance-*,
+  portability-*,
+  readability-avoid-const-params-in-decls,
+  readability-braces-around-statements,
+  readability-else-after-return,
+  readability-function-cognitive-complexity,
+  readability-function-size,
+  readability-identifier-naming,
+  readability-implicit-bool-conversion,
+  readability-inconsistent-declaration-parameter-name,
+  readability-isolate-declaration,
+  readability-misleading-indentation,
+  readability-non-const-parameter,
+  readability-redundant-control-flow,
+  readability-redundant-preprocessor,
+  readability-simplify-boolean-expr,
+  readability-uppercase-literal-suffix,
+
+# ================================================================
+# 重大カテゴリの違反はビルドエラーとして扱う
+# ================================================================
+WarningsAsErrors: >
+  bugprone-*,
+  cert-*,
+  clang-analyzer-*,
+  concurrency-*,
+  misc-no-recursion,
+  performance-no-automatic-move,
+  readability-misleading-indentation,
+
+# 自プロジェクトのヘッダーのみ検査
+HeaderFilterRegex: 'src/stamp.*\.(h|c)$'
+
+# .clang-format に従う自動修正
+FormatStyle: file
+
+CheckOptions:
+  # ================================================================
+  # 命名規則 (Linux Kernel スタイル — 厳格適用)
+  # ================================================================
+
+  # --- 関数: snake_case (公開API は stamp_ プレフィックス必須) ---
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+
+  # --- グローバル変数 (extern): g_ + snake_case ---
+  - key: readability-identifier-naming.GlobalVariableCase
+    value: lower_case
+  - key: readability-identifier-naming.GlobalVariablePrefix
+    value: 'g_'
+
+  # --- ファイルスコープ static 変数: g_ + snake_case ---
+  - key: readability-identifier-naming.StaticVariableCase
+    value: lower_case
+  - key: readability-identifier-naming.StaticVariablePrefix
+    value: 'g_'
+
+  # --- ローカル変数: snake_case ---
+  - key: readability-identifier-naming.LocalVariableCase
+    value: lower_case
+
+  # --- パラメータ: snake_case ---
+  - key: readability-identifier-naming.ParameterCase
+    value: lower_case
+
+  # --- 定数 (const): snake_case ---
+  - key: readability-identifier-naming.LocalConstantCase
+    value: lower_case
+  - key: readability-identifier-naming.GlobalConstantCase
+    value: lower_case
+
+  # --- マクロ: UPPER_CASE ---
+  - key: readability-identifier-naming.MacroDefinitionCase
+    value: UPPER_CASE
+  # likely/unlikely は Linux Kernel 慣例で小文字を許容
+  - key: readability-identifier-naming.MacroDefinitionIgnoredRegexp
+    value: '^(likely|unlikely|_POSIX_C_SOURCE|_DEFAULT_SOURCE)$'
+
+  # --- 構造体: snake_case ---
+  - key: readability-identifier-naming.StructCase
+    value: lower_case
+
+  # --- 共用体: snake_case ---
+  - key: readability-identifier-naming.UnionCase
+    value: lower_case
+
+  # --- 列挙型名: snake_case ---
+  - key: readability-identifier-naming.EnumCase
+    value: lower_case
+
+  # --- 列挙定数: UPPER_CASE ---
+  - key: readability-identifier-naming.EnumConstantCase
+    value: UPPER_CASE
+
+  # --- typedef: snake_case (Linux Kernel — _t サフィックス不要) ---
+  - key: readability-identifier-naming.TypedefCase
+    value: lower_case
+  - key: readability-identifier-naming.TypedefIgnoredRegexp
+    value: '^SOCKET$'
+
+  # ================================================================
+  # bugprone 調整
+  # ================================================================
+
+  # シグナルハンドラ内の許容関数 (POSIX async-signal-safe のみ)
+  - key: bugprone-signal-handler.AsyncSafeFunctionSet
+    value: POSIX
+
+  # ================================================================
+  # readability — 関数の複雑度・サイズ制限
+  # ================================================================
+
+  # 認知的複雑度の上限 (Phase 6-3 で分割済み — 厳格に制限)
+  - key: readability-function-cognitive-complexity.Threshold
+    value: '25'
+  - key: readability-function-cognitive-complexity.DescribeBasicIncrements
+    value: 'true'
+
+  # 関数サイズの上限
+  - key: readability-function-size.LineThreshold
+    value: '105'
+  - key: readability-function-size.StatementThreshold
+    value: '60'
+  - key: readability-function-size.BranchThreshold
+    value: '20'
+  - key: readability-function-size.ParameterThreshold
+    value: '8'
+  - key: readability-function-size.NestingThreshold
+    value: '5'
+  - key: readability-function-size.VariableThreshold
+    value: '15'
+
+  # else-after-return: WarnOnConditionVariables も検査
+  - key: readability-else-after-return.WarnOnConditionVariables
+    value: 'true'
+
+  # implicit-bool-conversion: C では整数→bool 変換が慣例的
+  # ポインタの暗黙変換のみ許容 (NULL チェック: if (ptr))
+  - key: readability-implicit-bool-conversion.AllowIntegerConditions
+    value: 'true'
+  - key: readability-implicit-bool-conversion.AllowPointerConditions
+    value: 'true'
+
+  # ================================================================
+  # misc 調整
+  # ================================================================
+
+  # Note: misc-magic-numbers は C++ 専用 (cppcoreguidelines-avoid-magic-numbers
+  #       のエイリアス)。C プロジェクトでは機能しないため設定不要。
+  #       マジックナンバー検出は cppcheck --enable=all で補完。

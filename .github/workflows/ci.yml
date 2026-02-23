@@ -8,6 +8,9 @@ on:
       - 'tests/**'
       - 'CMakeLists.txt'
       - 'CMakePresets.json'
+      - '.clang-format'
+      - '.clang-tidy'
+      - '.cppcheck-suppressions'
       - '.github/workflows/ci.yml'
   pull_request:
     branches: [main]
@@ -16,53 +19,57 @@ on:
       - 'tests/**'
       - 'CMakeLists.txt'
       - 'CMakePresets.json'
+      - '.clang-format'
+      - '.clang-tidy'
+      - '.cppcheck-suppressions'
       - '.github/workflows/ci.yml'
 
 jobs:
-  codeql:
-    name: CodeQL Analysis
+  lint:
+    name: Lint & Static Analysis
     runs-on: ubuntu-24.04
-
-    permissions:
-      actions: read
-      contents: read
-      security-events: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Setup GCC 14
+      - name: Install tools
         run: |
           sudo apt update
-          sudo apt install -y gcc-14
+          sudo apt install -y gcc-14 clang-format clang-tidy cppcheck
 
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
-        with:
-          languages: cpp
-          queries: security-and-quality
-          build-mode: manual
-
-      - name: Configure CMake
+      - name: Check formatting (clang-format)
         run: |
-          cmake -B build/ci \
-            -DCMAKE_BUILD_TYPE=Release \
+          clang-format --dry-run --Werror src/*.c src/*.h tests/*.c
+
+      - name: Configure CMake (for compile_commands.json)
+        run: |
+          cmake -B build/debug \
+            -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_C_COMPILER=gcc-14 \
-            -DPORTABLE_BUILD=ON \
-            -DENABLE_LTO=OFF \
-            -DENABLE_PGO_GENERATE=OFF \
-            -DENABLE_PGO_USE=OFF \
-            -DENABLE_GRAPHITE=OFF
+            -DPORTABLE_BUILD=ON
 
-      - name: Build for CodeQL
-        run: cmake --build build/ci -j"$(nproc)"
+      - name: Build (for clang-tidy)
+        run: cmake --build build/debug --parallel
 
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v4
+      - name: Run clang-tidy
+        run: |
+          clang-tidy -p build/debug src/*.c src/*.h tests/*.c
+
+      - name: Run cppcheck
+        run: |
+          cppcheck --enable=all --std=c17 \
+            --suppressions-list=.cppcheck-suppressions \
+            --library=posix \
+            --error-exitcode=1 \
+            --inline-suppr \
+            --check-level=exhaustive \
+            --force \
+            -I src/ src/ tests/
 
   build:
     name: Build (${{ matrix.os }})
+    needs: lint
     runs-on: ${{ matrix.os }}
 
     strategy:

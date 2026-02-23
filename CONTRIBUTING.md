@@ -70,8 +70,9 @@ RFC 8762 STAMP実装プロジェクトへの貢献を歓迎します！
 4. **テストの実行**
 
    ```bash
-   make clean
-   make test
+   cmake --preset debug
+   cmake --build --preset debug
+   ctest --preset debug
    ```
 
 5. **コミット**
@@ -94,17 +95,18 @@ RFC 8762 STAMP実装プロジェクトへの貢献を歓迎します！
 
 ### C言語スタイル
 
-- **インデント**: スペース4つ
+- **インデント**: タブ（幅8）
+- **フォーマッター**: `.clang-format` を使用（Linux Kernel スタイル準拠）
 - **命名規則**:
-  - 関数: `snake_case`
+  - 関数: `snake_case`（プレフィックス `stamp_` を推奨）
   - 変数: `snake_case`
   - マクロ: `UPPER_CASE`
-  - 構造体: `snake_case`
+  - 構造体: `snake_case`（例: `struct stamp_sender_packet`）
 - **括弧**: K&Rスタイル
 
   ```c
   if (condition) {
-      // コード
+    // コード
   }
   ```
 
@@ -123,17 +125,20 @@ RFC 8762 STAMP実装プロジェクトへの貢献を歓迎します！
 
 - **エラーハンドリング**: すべてのシステムコールの戻り値をチェック
 - **メモリ管理**: メモリリークがないことを確認
-- **ポータビリティ**: クロスプラットフォーム対応を維持
+- **ポータビリティ**: クロスプラットフォーム対応を維持（`#ifdef` によるプラットフォーム分岐）
+- **コンパイラ**: GCC 14+ 必須。`-Werror` 有効のため、警告ゼロであること
 - **ドキュメント**: 複雑な処理には説明を追加
 
 ## テスト
 
 ### ユニットテスト
 
-新しい機能には、対応するテストを追加してください：
+新しい機能には、対応するテストを追加してください（`tests/test_stamp.c`）：
 
 ```bash
-make test
+cmake --preset debug
+cmake --build --preset debug
+ctest --preset debug
 ```
 
 ### 手動テスト
@@ -197,6 +202,35 @@ Fixes #123
 - 建設的なフィードバックを提供する
 - 多様性を尊重する
 - オープンで協力的な態度を保つ
+
+## 開発環境 (VS Code)
+
+このプロジェクトは VS Code での開発を推奨しています。
+
+### 推奨拡張機能
+
+プロジェクトを開くと、以下の拡張機能がインストール推奨されます:
+
+- **C/C++ Extension Pack** (`ms-vscode.cpptools-extension-pack`) - IntelliSense、デバッグ
+- **CMake Tools** (`ms-vscode.cmake-tools`) - CMake プロジェクト管理
+- **Prettier** (`esbenp.prettier-vscode`) - JSON/Markdown/YAML のフォーマット
+- **Git Graph** (`mhutchie.git-graph`) - Git ブランチの可視化
+- **GitHub Actions** (`github.vscode-github-actions`) - ワークフローの編集・実行
+
+### コードスタイル
+
+| 言語 | インデント | スタイル |
+| --- | --- | --- |
+| C/H | タブ（8 幅） | Linux Kernel スタイル |
+| JSON/YAML | 2 スペース | Prettier |
+| Markdown | 2 スペース | Prettier |
+
+### フォーマット
+
+- **保存時自動フォーマット**: 有効
+- **手動フォーマット**: `Shift + Alt + F` (Windows) / `Shift + Option + F` (Mac)
+- **改行コード**: LF（Unix 形式）
+- **文字コード**: UTF-8
 
 ## 質問がある場合
 
