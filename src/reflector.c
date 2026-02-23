@@ -313,11 +313,13 @@ __attribute__((hot)) static inline void extract_ttl_from_cmsg(struct msghdr *msg
 
 /**
  * 受信TTL/Hop Limitオプションの設定
+ * dual-stack ソケットの場合、IPv4-mapped IPv6 受信のため IP_RECVTTL も設定する
  */
 __attribute__((cold)) static void setup_recv_ttl_options(SOCKET sockfd,
-							 int family)
+							 int family,
+							 bool is_dualstack)
 {
-	if (family == AF_INET) {
+	if (family == AF_INET || is_dualstack) {
 #ifdef IP_RECVTTL
 		int recv_ttl = 1;
 		if (setsockopt(sockfd,
@@ -335,7 +337,8 @@ __attribute__((cold)) static void setup_recv_ttl_options(SOCKET sockfd,
 			"Warning: IP_RECVTTL not available on this "
 			"platform; TTL info will be unavailable\n");
 #endif
-	} else {
+	}
+	if (family != AF_INET) {
 #ifdef IPV6_RECVHOPLIMIT
 		int recv_hop = 1;
 		if (setsockopt(sockfd,
@@ -578,7 +581,7 @@ __attribute__((cold)) static SOCKET init_reflector_socket(
 #ifdef _WIN32
 		configure_reflector_socket_windows(sockfd);
 #endif
-		setup_recv_ttl_options(sockfd, family);
+		setup_recv_ttl_options(sockfd, family, family == AF_INET6 && af_hint == AF_UNSPEC);
 #ifndef _WIN32
 		configure_reflector_socket_unix(sockfd, ifname);
 #endif
