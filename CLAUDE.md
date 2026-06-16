@@ -17,6 +17,7 @@ cmake --preset asan && cmake --build --preset asan && ctest --preset asan
 ```
 
 **必須環境**: GCC 14+, CMake 3.25+, Ninja
+**推奨ツール**: mdformat (`pipx install mdformat && pipx inject mdformat mdformat-gfm mdformat-tables`)
 **C 標準**: GNU C17 (`-std=gnu17`). GNU 拡張を積極使用（`__builtin_expect`, `__attribute__`, `__atomic_*` 等）
 **`-Werror` 有効**: 警告ゼロ必須。30+ の厳格な警告フラグが設定済み
 
@@ -69,10 +70,11 @@ cppcheck --enable=all --std=c17 \
 
 コードを修正した後は、必要に応じて以下を順に実行する:
 
-1. **フォーマッター**: `clang-format -i src/*.c src/*.h tests/*.c`
-2. **ビルド & テスト**: `cmake --build --preset debug && ctest --preset debug`
-3. **リンター**: `clang-tidy -p build/debug src/*.c src/*.h tests/*.c`
-4. **静的解析**: `cppcheck --enable=all --std=c17 --suppressions-list=.cppcheck-suppressions --library=posix --error-exitcode=1 --inline-suppr --check-level=exhaustive --force -I src/ src/ tests/`
+1. **C フォーマッター**: `clang-format -i src/*.c src/*.h tests/*.c`
+2. **Markdown フォーマッター**: `mdformat --number --compact-tables docs/*.md CLAUDE.md`
+3. **ビルド & テスト**: `cmake --build --preset debug && ctest --preset debug`
+4. **リンター**: `clang-tidy -p build/debug src/*.c src/*.h tests/*.c`
+5. **静的解析**: `cppcheck --enable=all --std=c17 --suppressions-list=.cppcheck-suppressions --library=posix --error-exitcode=1 --inline-suppr --check-level=exhaustive --force -I src/ src/ tests/`
 
 ## テストの追加・更新
 
