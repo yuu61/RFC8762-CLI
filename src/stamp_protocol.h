@@ -9,11 +9,13 @@
 #define NTP_OFFSET 2208988800UL
 
 // STAMPプロトコル定数
-#define STAMP_PORT	       862	    // STAMP標準ポート番号 (RFC 8762 Section 4.1)
-#define STAMP_BASE_PACKET_SIZE 44	    // 基本パケットサイズ(RFC 4.2.1, 4.3.1) (バイト)
-#define STAMP_MAX_PACKET_SIZE  65507	    // UDPペイロード最大長
-#define STAMP_MAX_SSID	       65535	    // セッションセンダーIDの最大値
-#define NTP_FRAC_SCALE	       4294967296.0 // 2^32
+#define STAMP_PORT	       862	     // STAMP標準ポート番号 (RFC 8762 Section 4.1)
+#define STAMP_MAX_PORT	       65535	     // ポート番号の最大値 (UINT16_MAX)
+#define STAMP_BASE_PACKET_SIZE 44	     // 基本パケットサイズ(RFC 4.2.1, 4.3.1) (バイト)
+#define STAMP_MAX_PACKET_SIZE  65507	     // UDPペイロード最大長
+#define STAMP_MAX_SSID	       65535	     // セッションセンダーIDの最大値
+#define NTP_FRAC_SCALE	       4294967296.0  // 2^32
+#define NTP_FRAC_SCALE_INT     4294967296ULL // 2^32 (整数版: nsec/usec -> NTP小数部)
 
 // タイムアウト設定
 #define SOCKET_TIMEOUT_SEC  5
@@ -51,13 +53,13 @@
 
 // NTP小数部変換マクロ (丸め付き)
 // ナノ秒からNTP小数部への変換: nsec * 2^32 / 10^9
-#define NSEC_TO_NTP_FRAC(nsec)                                          \
-	((uint32_t)(((uint64_t)(nsec) * 4294967296ULL + 500000000ULL) / \
+#define NSEC_TO_NTP_FRAC(nsec)                                               \
+	((uint32_t)(((uint64_t)(nsec) * NTP_FRAC_SCALE_INT + 500000000ULL) / \
 		    NSEC_PER_SEC))
 
 // マイクロ秒からNTP小数部への変換: usec * 2^32 / 10^6
-#define USEC_TO_NTP_FRAC(usec)                                       \
-	((uint32_t)(((uint64_t)(usec) * 4294967296ULL + 500000ULL) / \
+#define USEC_TO_NTP_FRAC(usec)                                            \
+	((uint32_t)(((uint64_t)(usec) * NTP_FRAC_SCALE_INT + 500000ULL) / \
 		    USEC_PER_SEC))
 
 #ifdef _WIN32

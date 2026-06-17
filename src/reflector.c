@@ -78,7 +78,7 @@ __attribute__((cold)) static int run_nft_command(const char *const argv[],
 		if (suppress_stderr) {
 			int devnull = open("/dev/null", O_WRONLY);
 			if (devnull >= 0) {
-				dup2(devnull, STDERR_FILENO);
+				(void)dup2(devnull, STDERR_FILENO);
 				close(devnull);
 			}
 		}
@@ -1123,7 +1123,7 @@ __attribute__((hot)) static void handle_one_packet(
 				  &t2_sec,
 				  &t2_frac);
 	if (n < 0) {
-		if (!g_running) {
+		if (!__atomic_load_n(&g_running, __ATOMIC_SEQ_CST)) {
 			return;
 		}
 #ifdef _WIN32

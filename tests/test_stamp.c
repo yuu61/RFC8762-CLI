@@ -182,18 +182,18 @@ static void set_valid_error_estimate(uint8_t *buf, size_t len)
 	}
 }
 
-static void test_validate_stamp_packet(void)
+static void test_stamp_validate_packet(void)
 {
 	uint8_t buffer[STAMP_BASE_PACKET_SIZE + 4];
 
 	memset(buffer, 0, sizeof(buffer));
 	set_valid_error_estimate(buffer, sizeof(buffer));
-	EXPECT_TRUE(validate_stamp_packet(buffer, STAMP_BASE_PACKET_SIZE) == 1,
+	EXPECT_TRUE(stamp_validate_packet(buffer, STAMP_BASE_PACKET_SIZE) == 1,
 		    "validate base size");
-	EXPECT_TRUE(validate_stamp_packet(buffer, STAMP_BASE_PACKET_SIZE + 1) ==
+	EXPECT_TRUE(stamp_validate_packet(buffer, STAMP_BASE_PACKET_SIZE + 1) ==
 			    1,
 		    "validate larger size");
-	EXPECT_TRUE(validate_stamp_packet(buffer, STAMP_BASE_PACKET_SIZE - 1) ==
+	EXPECT_TRUE(stamp_validate_packet(buffer, STAMP_BASE_PACKET_SIZE - 1) ==
 			    0,
 		    "validate too small");
 	// NULLテストは削除: nonnull属性により未定義動作となるため
@@ -1535,78 +1535,78 @@ static void test_stamp_resolve_address_list(void)
 }
 
 // =============================================================================
-// Phase 5: validate_stamp_packet 拡張テスト
+// Phase 5: stamp_validate_packet 拡張テスト
 // =============================================================================
 
-static void test_validate_stamp_packet_boundary_sizes(void)
+static void test_stamp_validate_packet_boundary_sizes(void)
 {
 	uint8_t buffer[STAMP_MAX_PACKET_SIZE + 16];
 	memset(buffer, 0, sizeof(buffer));
 	set_valid_error_estimate(buffer, sizeof(buffer));
 
 	// ちょうど最小サイズ
-	EXPECT_TRUE(validate_stamp_packet(buffer, STAMP_BASE_PACKET_SIZE) == 1,
+	EXPECT_TRUE(stamp_validate_packet(buffer, STAMP_BASE_PACKET_SIZE) == 1,
 		    "validate exact STAMP_BASE_PACKET_SIZE");
 
 	// 最小サイズ - 1
-	EXPECT_TRUE(validate_stamp_packet(buffer, STAMP_BASE_PACKET_SIZE - 1) ==
+	EXPECT_TRUE(stamp_validate_packet(buffer, STAMP_BASE_PACKET_SIZE - 1) ==
 			    0,
 		    "validate STAMP_BASE_PACKET_SIZE - 1");
 
 	// 最大サイズ
-	EXPECT_TRUE(validate_stamp_packet(buffer, STAMP_MAX_PACKET_SIZE) == 1,
+	EXPECT_TRUE(stamp_validate_packet(buffer, STAMP_MAX_PACKET_SIZE) == 1,
 		    "validate STAMP_MAX_PACKET_SIZE");
 
 	// 中間サイズ
-	EXPECT_TRUE(validate_stamp_packet(buffer, 100) == 1,
+	EXPECT_TRUE(stamp_validate_packet(buffer, 100) == 1,
 		    "validate medium size (100)");
-	EXPECT_TRUE(validate_stamp_packet(buffer, 1000) == 1,
+	EXPECT_TRUE(stamp_validate_packet(buffer, 1000) == 1,
 		    "validate size 1000");
 
 	// サイズ0
-	EXPECT_TRUE(validate_stamp_packet(buffer, 0) == 0, "validate size 0");
+	EXPECT_TRUE(stamp_validate_packet(buffer, 0) == 0, "validate size 0");
 
 	// 負のサイズ（int境界）
-	EXPECT_TRUE(validate_stamp_packet(buffer, -1) == 0,
+	EXPECT_TRUE(stamp_validate_packet(buffer, -1) == 0,
 		    "validate negative size");
 
 	// サイズ1（最小より小さい）
-	EXPECT_TRUE(validate_stamp_packet(buffer, 1) == 0, "validate size 1");
+	EXPECT_TRUE(stamp_validate_packet(buffer, 1) == 0, "validate size 1");
 }
 
-static void test_validate_stamp_test_payload_for_reflector(void)
+static void test_stamp_validate_test_payload_for_reflector(void)
 {
 	uint8_t buffer[STAMP_MAX_PACKET_SIZE + 16];
 	memset(buffer, 0, sizeof(buffer));
 
 	// 14バイト未満は拒否（TWAMP/OWAMP unauth minimum data segment未満）
-	EXPECT_TRUE(validate_stamp_test_payload_for_reflector(buffer, 13) == 0,
+	EXPECT_TRUE(stamp_validate_test_payload_for_reflector(buffer, 13) == 0,
 		    "reflector validate rejects size 13");
 
 	// 14バイト以上44バイト未満は Error Estimate が妥当なら許容（RFC 8762 4.6）
 	buffer[12] = 0x00;
 	buffer[13] = 0x01; // multiplier=1
-	EXPECT_TRUE(validate_stamp_test_payload_for_reflector(buffer, 14) == 1,
+	EXPECT_TRUE(stamp_validate_test_payload_for_reflector(buffer, 14) == 1,
 		    "reflector validate accepts size 14 with valid EE");
-	EXPECT_TRUE(validate_stamp_test_payload_for_reflector(buffer, 43) == 1,
+	EXPECT_TRUE(stamp_validate_test_payload_for_reflector(buffer, 43) == 1,
 		    "reflector validate accepts size 43 with valid EE");
 
 	// multiplier==0 は拒否
 	buffer[12] = 0x00;
 	buffer[13] = 0x00;
-	EXPECT_TRUE(validate_stamp_test_payload_for_reflector(buffer, 14) == 0,
+	EXPECT_TRUE(stamp_validate_test_payload_for_reflector(buffer, 14) == 0,
 		    "reflector validate rejects multiplier==0 at size 14");
-	EXPECT_TRUE(validate_stamp_test_payload_for_reflector(buffer, 44) == 0,
+	EXPECT_TRUE(stamp_validate_test_payload_for_reflector(buffer, 44) == 0,
 		    "reflector validate rejects multiplier==0 at size 44");
 
 	// base STAMP サイズ以上は既存 validate と同様に受理可能
 	buffer[12] = 0x40; // Z=1
 	buffer[13] = 0x01; // multiplier=1
-	EXPECT_TRUE(validate_stamp_test_payload_for_reflector(buffer, 44) == 1,
+	EXPECT_TRUE(stamp_validate_test_payload_for_reflector(buffer, 44) == 1,
 		    "reflector validate accepts size 44 with valid PTP EE");
 
 	// 上限超過は拒否
-	EXPECT_TRUE(validate_stamp_test_payload_for_reflector(
+	EXPECT_TRUE(stamp_validate_test_payload_for_reflector(
 			    buffer,
 			    STAMP_MAX_PACKET_SIZE + 1) == 0,
 		    "reflector validate rejects oversized payload");
@@ -1861,6 +1861,7 @@ static void test_reflector_packet_fields(void)
 {
 	struct stamp_sender_packet sender;
 	struct stamp_reflector_packet reflector;
+	const uint8_t *b; // 各フィールドのバイト検証で再利用
 
 	// 送信者パケットを設定
 	memset(&sender, 0, sizeof(sender));
@@ -1869,33 +1870,38 @@ static void test_reflector_packet_fields(void)
 	sender.timestamp_frac = htonl(0xABCDEF00);
 	sender.error_estimate = htons(ERROR_ESTIMATE_DEFAULT);
 
-	// Reflectorパケットに情報をコピー（reflect_packet()のロジック）
+	// production の反射パケット構築ロジック (reflect_packet が呼ぶ本体) を
+	// 実際に呼び出して検証する。旧実装はこのコピー処理をテスト内で手書きして
+	// おり、自分で代入した値を読み返すだけのトートロジーになっていた。
 	memset(&reflector, 0, sizeof(reflector));
-	reflector.seq_num = sender.seq_num; // Stateless mode
-	reflector.sender_seq_num = sender.seq_num;
-	reflector.sender_ts_sec = sender.timestamp_sec;
-	reflector.sender_ts_frac = sender.timestamp_frac;
-	reflector.sender_err_est = sender.error_estimate;
-	reflector.sender_ttl = 64;
-	reflector.error_estimate = htons(ERROR_ESTIMATE_DEFAULT);
+	memcpy(&reflector, &sender, sizeof(sender));
+	// reflector 自身の Error Estimate は sender の値(DEFAULT=0x0001)とは
+	// 別値(PTP=0x4001)を渡す。両フィールドは offset 12 で重なるため、別値に
+	// しないと memcpy 残骸と区別できず production の上書きを検証できない。
+	stamp_build_reflector_packet((uint8_t *)&reflector,
+				     STAMP_BASE_PACKET_SIZE,
+				     64,		// sender_ttl
+				     htonl(0x11223344), // rx_sec (T2)
+				     htonl(0x55667788), // rx_frac (T2)
+				     htons(ERROR_ESTIMATE_PTP_DEFAULT));
 
 	// 検証: バイトレベルで big-endian を確認
 	// seq_num = htonl(42) = 0x0000002A big-endian
 	{
-		const uint8_t *b = (const uint8_t *)&reflector.seq_num;
+		b = (const uint8_t *)&reflector.seq_num;
 		EXPECT_EQ_ULL(b[0], 0x00, "reflector seq_num byte[0]");
 		EXPECT_EQ_ULL(b[1], 0x00, "reflector seq_num byte[1]");
 		EXPECT_EQ_ULL(b[2], 0x00, "reflector seq_num byte[2]");
 		EXPECT_EQ_ULL(b[3], 0x2A, "reflector seq_num byte[3]");
 	}
 	{
-		const uint8_t *b = (const uint8_t *)&reflector.sender_seq_num;
+		b = (const uint8_t *)&reflector.sender_seq_num;
 		EXPECT_EQ_ULL(b[0], 0x00, "reflector sender_seq_num byte[0]");
 		EXPECT_EQ_ULL(b[3], 0x2A, "reflector sender_seq_num byte[3]");
 	}
 	// sender_ts_sec = htonl(0x12345678)
 	{
-		const uint8_t *b = (const uint8_t *)&reflector.sender_ts_sec;
+		b = (const uint8_t *)&reflector.sender_ts_sec;
 		EXPECT_EQ_ULL(b[0], 0x12, "reflector sender_ts_sec byte[0]");
 		EXPECT_EQ_ULL(b[1], 0x34, "reflector sender_ts_sec byte[1]");
 		EXPECT_EQ_ULL(b[2], 0x56, "reflector sender_ts_sec byte[2]");
@@ -1903,7 +1909,7 @@ static void test_reflector_packet_fields(void)
 	}
 	// sender_ts_frac = htonl(0xABCDEF00)
 	{
-		const uint8_t *b = (const uint8_t *)&reflector.sender_ts_frac;
+		b = (const uint8_t *)&reflector.sender_ts_frac;
 		EXPECT_EQ_ULL(b[0], 0xAB, "reflector sender_ts_frac byte[0]");
 		EXPECT_EQ_ULL(b[1], 0xCD, "reflector sender_ts_frac byte[1]");
 		EXPECT_EQ_ULL(b[2], 0xEF, "reflector sender_ts_frac byte[2]");
@@ -1911,11 +1917,27 @@ static void test_reflector_packet_fields(void)
 	}
 	// sender_err_est = htons(ERROR_ESTIMATE_DEFAULT)
 	{
-		const uint8_t *b = (const uint8_t *)&reflector.sender_err_est;
+		b = (const uint8_t *)&reflector.sender_err_est;
 		EXPECT_EQ_ULL(b[0], 0x00, "reflector sender_err_est byte[0]");
 		EXPECT_EQ_ULL(b[1], 0x01, "reflector sender_err_est byte[1]");
 	}
 	EXPECT_EQ_ULL(reflector.sender_ttl, 64, "reflector packet sender_ttl");
+
+	// Reflector が設定する受信タイムスタンプ T2 と Error Estimate
+	// (production stamp_build_reflector_packet の出力を検証)
+	{
+		b = (const uint8_t *)&reflector.rx_sec;
+		EXPECT_EQ_ULL(b[0], 0x11, "reflector rx_sec byte[0]");
+		EXPECT_EQ_ULL(b[3], 0x44, "reflector rx_sec byte[3]");
+	}
+	{
+		// ERROR_ESTIMATE_PTP_DEFAULT = 0x4001 → big-endian {0x40, 0x01}。
+		// byte[0]=0x40 は memcpy 残骸(0x00)と異なるため、production が
+		// error_estimate を上書きしたことを実証する。
+		b = (const uint8_t *)&reflector.error_estimate;
+		EXPECT_EQ_ULL(b[0], 0x40, "reflector error_estimate byte[0]");
+		EXPECT_EQ_ULL(b[1], 0x01, "reflector error_estimate byte[1]");
+	}
 
 	// MBZフィールド検証
 	EXPECT_EQ_ULL(reflector.mbz_1, 0, "reflector packet mbz_1");
@@ -2794,10 +2816,22 @@ static void test_stamp_nsec_to_ntp_frac_boundary(void)
 
 #ifndef _WIN32
 /**
+ * テスト間で共有するグローバル状態を既定値(実行中=1)に戻す
+ * setup/teardown ヘルパー。各テストを順序非依存・自己完結にする。
+ */
+static void reset_global_state(void)
+{
+	__atomic_store_n(&g_running, 1, __ATOMIC_SEQ_CST);
+}
+
+/**
  * 6a. シグナルハンドラテスト (Linux/POSIX)
  */
 static void test_signal_handler(void)
 {
+	// setup: グローバル状態を既知の値(実行中)へ
+	reset_global_state();
+
 	// SIGINT: g_running=1 → stamp_signal_handler(SIGINT) → g_running==0
 	__atomic_store_n(&g_running, 1, __ATOMIC_SEQ_CST);
 	stamp_signal_handler(SIGINT);
@@ -2822,8 +2856,8 @@ static void test_signal_handler(void)
 	EXPECT_TRUE(__atomic_load_n(&g_running, __ATOMIC_SEQ_CST) == 1,
 		    "signal handler SIGUSR1 does not change g_running");
 
-	// テスト後にg_runningを1にリセット（他テストへの影響回避）
-	__atomic_store_n(&g_running, 1, __ATOMIC_SEQ_CST);
+	// teardown: グローバル状態を既定値へ復元（他テストへの影響回避）
+	reset_global_state();
 }
 
 /**
@@ -3354,11 +3388,6 @@ static void test_edge_cases(void)
 	// STAMP_MAX_SSID定数テスト
 	EXPECT_TRUE(STAMP_MAX_SSID == 65535, "STAMP_MAX_SSID is 65535");
 
-	// seq番号ラップアラウンドテスト（UINT32_MAX → 0）
-	uint32_t seq = UINT32_MAX;
-	seq++;
-	EXPECT_TRUE(seq == 0, "seq wrap UINT32_MAX -> 0");
-
 	// PTP_NSEC_MAX境界テスト
 	EXPECT_TRUE(PTP_NSEC_MAX == 999999999, "PTP_NSEC_MAX is 999999999");
 	uint32_t nsec_ptp = PTP_NSEC_MAX;
@@ -3377,18 +3406,18 @@ static void test_edge_cases(void)
 	uint32_t nsec_zero = stamp_ntp_frac_to_nsec(frac_zero);
 	EXPECT_TRUE(nsec_zero == 0, "ntp_frac roundtrip 0ns");
 
-	// validate_stamp_packet: Error Estimate multiplier==0 拒否テスト
+	// stamp_validate_packet: Error Estimate multiplier==0 拒否テスト
 	{
 		uint8_t buf[STAMP_BASE_PACKET_SIZE];
 		memset(buf, 0, sizeof(buf));
 		// multiplier==0 → 拒否
-		EXPECT_TRUE(validate_stamp_packet(buf,
+		EXPECT_TRUE(stamp_validate_packet(buf,
 						  STAMP_BASE_PACKET_SIZE) == 0,
 			    "validate rejects multiplier==0");
 		// Z=1, S=1, multiplier=1 → 受理
 		buf[12] = 0xC0; // S=1, Z=1
 		buf[13] = 0x01; // multiplier=1
-		EXPECT_TRUE(validate_stamp_packet(buf,
+		EXPECT_TRUE(stamp_validate_packet(buf,
 						  STAMP_BASE_PACKET_SIZE) == 1,
 			    "validate accepts PTP error_estimate");
 	}
@@ -3545,8 +3574,8 @@ static void e2e_stamp_loopback_impl(bool ptp_mode, const char *label)
 		goto cleanup;
 	}
 
-	snprintf(msg, sizeof(msg), "%s: validate_stamp_test_payload_for_reflector", label);
-	EXPECT_TRUE(validate_stamp_test_payload_for_reflector(buf, (int)recv_n),
+	snprintf(msg, sizeof(msg), "%s: stamp_validate_test_payload_for_reflector", label);
+	EXPECT_TRUE(stamp_validate_test_payload_for_reflector(buf, (int)recv_n),
 		    msg);
 
 	// T2 取得
@@ -3612,8 +3641,8 @@ static void e2e_stamp_loopback_impl(bool ptp_mode, const char *label)
 	}
 
 	// パケット妥当性検証
-	snprintf(msg, sizeof(msg), "%s: validate_stamp_packet", label);
-	EXPECT_TRUE(validate_stamp_packet(resp_buf, (int)resp_n), msg);
+	snprintf(msg, sizeof(msg), "%s: stamp_validate_packet", label);
+	EXPECT_TRUE(stamp_validate_packet(resp_buf, (int)resp_n), msg);
 
 	const struct stamp_reflector_packet *resp =
 		(const struct stamp_reflector_packet *)resp_buf;
@@ -3790,7 +3819,7 @@ static void test_e2e_stamp_loopback_padded(void)
 	EXPECT_TRUE(recv_n == padded_size, msg);
 
 	snprintf(msg, sizeof(msg), "%s: validate payload", label);
-	EXPECT_TRUE(validate_stamp_test_payload_for_reflector(recv_buf, (int)recv_n),
+	EXPECT_TRUE(stamp_validate_test_payload_for_reflector(recv_buf, (int)recv_n),
 		    msg);
 
 	// Reflector 応答パケット構築
@@ -3843,8 +3872,8 @@ static void test_e2e_stamp_loopback_padded(void)
 	snprintf(msg, sizeof(msg), "%s: resp size == padded_size", label);
 	EXPECT_TRUE(resp_n == padded_size, msg);
 
-	snprintf(msg, sizeof(msg), "%s: validate_stamp_packet", label);
-	EXPECT_TRUE(validate_stamp_packet(resp_buf, (int)resp_n), msg);
+	snprintf(msg, sizeof(msg), "%s: stamp_validate_packet", label);
+	EXPECT_TRUE(stamp_validate_packet(resp_buf, (int)resp_n), msg);
 
 	const struct stamp_reflector_packet *resp =
 		(const struct stamp_reflector_packet *)resp_buf;
@@ -4109,11 +4138,14 @@ cleanup:
 // =============================================================================
 
 #ifndef _WIN32
+// reset_global_state() がグローバル状態を既定値へ復元することを単体で検証する。
+// 前テストの後処理に依存しない自己完結テスト（順序非依存）。
 static void test_signal_handler_reset(void)
 {
-	// g_running が前のテストでリセットされていることを確認
+	__atomic_store_n(&g_running, 0, __ATOMIC_SEQ_CST);
+	reset_global_state();
 	EXPECT_TRUE(__atomic_load_n(&g_running, __ATOMIC_SEQ_CST) == 1,
-		    "g_running reset after signal test");
+		    "reset_global_state restores g_running=1");
 }
 #endif
 
@@ -4134,7 +4166,7 @@ int main(void)
 
 	test_protocol_constants();
 	test_struct_layout();
-	test_validate_stamp_packet();
+	test_stamp_validate_packet();
 	test_stamp_ntp_to_double();
 	test_stamp_get_ntp_timestamp();
 	test_byte_order();
@@ -4182,9 +4214,9 @@ int main(void)
 	// Phase 4: stamp_resolve_address_list
 	test_stamp_resolve_address_list();
 
-	// Phase 5: validate_stamp_packet拡張
-	test_validate_stamp_packet_boundary_sizes();
-	test_validate_stamp_test_payload_for_reflector();
+	// Phase 5: stamp_validate_packet拡張
+	test_stamp_validate_packet_boundary_sizes();
+	test_stamp_validate_test_payload_for_reflector();
 	test_stamp_check_reflector_input();
 
 	// Phase 6: RTT計算

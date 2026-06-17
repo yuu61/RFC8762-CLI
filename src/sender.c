@@ -846,7 +846,7 @@ static int receive_and_process_packet(
 		return -1;
 	}
 
-	if (unlikely(!validate_stamp_packet(buffer, n))) {
+	if (unlikely(!stamp_validate_packet(buffer, n))) {
 		fprintf(stderr, "Invalid packet received\n");
 		return -1;
 	}

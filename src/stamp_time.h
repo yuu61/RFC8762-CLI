@@ -103,10 +103,10 @@ __attribute__((const)) static inline uint32_t stamp_ntp_frac_to_nsec(uint32_t nt
 __attribute__((const)) static inline uint32_t stamp_nsec_to_ntp_frac(uint64_t nsec)
 {
 	uint64_t product;
-	if (__builtin_mul_overflow(nsec, 4294967296ULL, &product)) {
+	if (__builtin_mul_overflow(nsec, NTP_FRAC_SCALE_INT, &product)) {
 		// nsec が想定範囲外（>= 2^32）の場合、最大値にクランプ
 		nsec = NSEC_PER_SEC - 1;
-		product = nsec * 4294967296ULL;
+		product = nsec * NTP_FRAC_SCALE_INT;
 	}
 	return (uint32_t)((product + 500000000ULL) / NSEC_PER_SEC);
 }
@@ -352,7 +352,7 @@ __attribute__((const)) static inline double stamp_jitter(double sum,
  * @param size パケットサイズ（バイト）
  * @return 妥当な場合1、不正な場合0
  */
-static inline int validate_error_estimate_multiplier(const void *packet, int size)
+static inline int stamp_validate_error_estimate_multiplier(const void *packet, int size)
 {
 	// Error Estimate は offset 12-13 にあるため、最低14バイト必要
 	if (size < 14 || size > STAMP_MAX_PACKET_SIZE) {
@@ -371,9 +371,9 @@ static inline int validate_error_estimate_multiplier(const void *packet, int siz
  * @return 妥当な場合1、不正な場合0
  */
 static inline int
-validate_stamp_test_payload_for_reflector(const void *packet, int size)
+stamp_validate_test_payload_for_reflector(const void *packet, int size)
 {
-	return validate_error_estimate_multiplier(packet, size);
+	return stamp_validate_error_estimate_multiplier(packet, size);
 }
 
 enum stamp_reflector_input_check_result {
@@ -392,7 +392,7 @@ enum stamp_reflector_input_check_result {
 static inline enum stamp_reflector_input_check_result
 stamp_check_reflector_input(const void *packet, int size, uint8_t sender_ttl)
 {
-	if (!validate_stamp_test_payload_for_reflector(packet, size)) {
+	if (!stamp_validate_test_payload_for_reflector(packet, size)) {
 		return STAMP_REFLECTOR_INPUT_INVALID_PAYLOAD;
 	}
 	if (sender_ttl == 0) {
@@ -407,12 +407,12 @@ stamp_check_reflector_input(const void *packet, int size, uint8_t sender_ttl)
  * @param size パケットサイズ（バイト）
  * @return 妥当な場合1、不正な場合0
  */
-static inline int validate_stamp_packet(const void *packet, int size)
+static inline int stamp_validate_packet(const void *packet, int size)
 {
 	if (size < STAMP_BASE_PACKET_SIZE) {
 		return 0;
 	}
-	return validate_error_estimate_multiplier(packet, size);
+	return stamp_validate_error_estimate_multiplier(packet, size);
 }
 
 #endif // STAMP_TIME_H
