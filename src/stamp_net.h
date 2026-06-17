@@ -50,7 +50,7 @@ __attribute__((nonnull(1, 2), cold)) static inline int stamp_parse_port(
 	value = strtoul(arg, &end, 10);
 
 	if (errno == ERANGE || (end && *end != '\0') || value == 0 ||
-	    value > 65535) {
+	    value > STAMP_MAX_PORT) {
 		return -1;
 	}
 

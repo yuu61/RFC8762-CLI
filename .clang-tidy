@@ -180,6 +180,8 @@ CheckOptions:
   # misc 調整
   # ================================================================
 
-  # Note: misc-magic-numbers は C++ 専用 (cppcoreguidelines-avoid-magic-numbers
-  #       のエイリアス)。C プロジェクトでは機能しないため設定不要。
-  #       マジックナンバー検出は cppcheck --enable=all で補完。
+  # Note: readability-magic-numbers (cppcoreguidelines-avoid-magic-numbers の
+  #       エイリアス) は C コードでも発火する。ただし有効化すると RFC 定数・
+  #       バイトオフセット・ビットマスク・テスト値などで src+tests 約300件の
+  #       警告が出るため、意図的に無効のままとする。マジックナンバーは
+  #       stamp_protocol.h への名前付き定数化とコードレビューで管理する。
