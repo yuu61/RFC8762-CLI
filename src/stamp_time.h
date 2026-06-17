@@ -5,6 +5,9 @@
 
 #include "stamp_protocol.h"
 
+// タイムスタンプ形式フラグ（stamp_globals.c で定義、各 main() が CLI から設定）
+extern bool g_ptp_mode;
+
 /**
  * NTPタイムスタンプを取得 (RFC 5905)
  * @param sec  秒部分（ネットワークバイトオーダー）

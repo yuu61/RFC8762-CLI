@@ -74,8 +74,13 @@ atomicNoOp:src/stamp_globals.c
 # テストの static inline ヘルパー関数が未使用と判定される場合
 unusedFunction:tests/test_stamp.c
 
+# stamp_recv.h はプラットフォーム別の static inline 受信ヘルパーを集約しており、
+# 特定のビルド構成（一部分岐が除外されるパス等）で未使用と判定される場合がある
+unusedFunction:src/stamp_recv.h
+
 # stamp_get_timestamp() は cppcheck が特定のプラットフォームパスのみ解析する際に
 # 常に 0 を返すと判定するが、Linux では clock_gettime が失敗しうる防御コーディング
 knownConditionTrueFalse:src/sender.c
 knownConditionTrueFalse:src/reflector.c
+knownConditionTrueFalse:src/stamp_recv.h
 knownConditionTrueFalse:tests/test_stamp.c

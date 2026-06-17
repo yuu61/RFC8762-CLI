@@ -9,6 +9,7 @@
 #include "stamp_net.h"
 #include "stamp_platform.h"
 #include "stamp_protocol.h"
+#include "stamp_recv.h"
 #include "stamp_time.h"
 
 #endif // STAMP_H

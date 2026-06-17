@@ -21,6 +21,9 @@
 #endif
 
 #ifdef _WIN32
+// WSARecvMsg 関数ポインタ（実体は stamp_globals.c、各実行ファイルが初期化）
+extern LPFN_WSARECVMSG g_wsa_recvmsg;
+
 /**
  * WSARecvMsg関数ポインタの初期化
  * @param sockfd ソケットディスクリプタ

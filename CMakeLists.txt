@@ -260,6 +260,7 @@ set(HEADERS
     src/stamp_time.h
     src/stamp_kernel_ts.h
     src/stamp_net.h
+    src/stamp_recv.h
 )
 
 # Build reflector executable
