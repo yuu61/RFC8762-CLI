@@ -1875,12 +1875,15 @@ static void test_reflector_packet_fields(void)
 	// おり、自分で代入した値を読み返すだけのトートロジーになっていた。
 	memset(&reflector, 0, sizeof(reflector));
 	memcpy(&reflector, &sender, sizeof(sender));
+	// reflector 自身の Error Estimate は sender の値(DEFAULT=0x0001)とは
+	// 別値(PTP=0x4001)を渡す。両フィールドは offset 12 で重なるため、別値に
+	// しないと memcpy 残骸と区別できず production の上書きを検証できない。
 	stamp_build_reflector_packet((uint8_t *)&reflector,
 				     STAMP_BASE_PACKET_SIZE,
 				     64,		// sender_ttl
 				     htonl(0x11223344), // rx_sec (T2)
 				     htonl(0x55667788), // rx_frac (T2)
-				     htons(ERROR_ESTIMATE_DEFAULT));
+				     htons(ERROR_ESTIMATE_PTP_DEFAULT));
 
 	// 検証: バイトレベルで big-endian を確認
 	// seq_num = htonl(42) = 0x0000002A big-endian
@@ -1928,8 +1931,11 @@ static void test_reflector_packet_fields(void)
 		EXPECT_EQ_ULL(b[3], 0x44, "reflector rx_sec byte[3]");
 	}
 	{
+		// ERROR_ESTIMATE_PTP_DEFAULT = 0x4001 → big-endian {0x40, 0x01}。
+		// byte[0]=0x40 は memcpy 残骸(0x00)と異なるため、production が
+		// error_estimate を上書きしたことを実証する。
 		b = (const uint8_t *)&reflector.error_estimate;
-		EXPECT_EQ_ULL(b[0], 0x00, "reflector error_estimate byte[0]");
+		EXPECT_EQ_ULL(b[0], 0x40, "reflector error_estimate byte[0]");
 		EXPECT_EQ_ULL(b[1], 0x01, "reflector error_estimate byte[1]");
 	}
 
