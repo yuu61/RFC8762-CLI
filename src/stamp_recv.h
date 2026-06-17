@@ -16,7 +16,7 @@
 /**
  * Windows: WSAMSG から TTL/Hop Limit を抽出
  */
-static inline void extract_ttl_from_wsamsg(WSAMSG *msg, uint8_t *ttl)
+static inline void stamp_extract_ttl_from_wsamsg(WSAMSG *msg, uint8_t *ttl)
 {
 	WSACMSGHDR *cmsg;
 #if defined(__GNUC__) && !defined(__clang__)
@@ -73,10 +73,6 @@ stamp_recv_with_timestamp_wsa(SOCKET sockfd,
 	char control[STAMP_CMSG_BUFSIZE];
 	DWORD bytes = 0;
 
-	if (ttl) {
-		*ttl = 0;
-	}
-
 	data_buf.buf = (CHAR *)buffer;
 	data_buf.len = (ULONG)buffer_len;
 	memset(&msg, 0, sizeof(msg));
@@ -110,7 +106,7 @@ stamp_recv_with_timestamp_wsa(SOCKET sockfd,
 	}
 
 	if (ttl) {
-		extract_ttl_from_wsamsg(&msg, ttl);
+		stamp_extract_ttl_from_wsamsg(&msg, ttl);
 	}
 
 	return (int)bytes;
@@ -118,7 +114,9 @@ stamp_recv_with_timestamp_wsa(SOCKET sockfd,
 
 /**
  * Windows: recvfrom フォールバック受信（WSARecvMsg 未使用時）
- * recvfrom では制御メッセージを得られないため TTL は 0 のまま。
+ * recvfrom では制御メッセージを得られないため TTL は抽出できず、
+ * 呼び出し元（ディスパッチャ）が事前に 0 初期化した値がそのまま残る。
+ * したがって ttl は引数に取らない。
  */
 __attribute__((hot)) static inline int
 stamp_recv_with_timestamp_fallback(SOCKET sockfd,
@@ -126,14 +124,9 @@ stamp_recv_with_timestamp_fallback(SOCKET sockfd,
 				   size_t buffer_len,
 				   struct sockaddr_storage *addr,
 				   socklen_t *len,
-				   uint8_t *ttl,
 				   uint32_t *ts_sec,
 				   uint32_t *ts_frac)
 {
-	if (ttl) {
-		*ttl = 0;
-	}
-
 	int n = recvfrom(sockfd,
 			 (char *)buffer,
 			 (int)buffer_len,
@@ -156,7 +149,7 @@ stamp_recv_with_timestamp_fallback(SOCKET sockfd,
  * Linux: cmsg から TTL/Hop Limit を抽出
  */
 __attribute__((hot)) static inline void
-extract_ttl_from_cmsg(struct msghdr *msg, uint8_t *ttl)
+stamp_extract_ttl_from_cmsg(struct msghdr *msg, uint8_t *ttl)
 {
 	struct cmsghdr *cmsg;
 	for (cmsg = CMSG_FIRSTHDR(msg); cmsg != NULL;
@@ -203,10 +196,6 @@ stamp_recv_with_timestamp_unix(SOCKET sockfd,
 	struct iovec iov;
 	char control[STAMP_CMSG_BUFSIZE];
 
-	if (ttl) {
-		*ttl = 0;
-	}
-
 	memset(&msg, 0, sizeof(msg));
 	iov.iov_base = buffer;
 	iov.iov_len = buffer_len;
@@ -241,7 +230,7 @@ stamp_recv_with_timestamp_unix(SOCKET sockfd,
 	}
 
 	if (ttl) {
-		extract_ttl_from_cmsg(&msg, ttl);
+		stamp_extract_ttl_from_cmsg(&msg, ttl);
 	}
 
 	return (int)n;
@@ -265,6 +254,12 @@ stamp_recv_with_timestamp(SOCKET sockfd,
 			  uint32_t *ts_sec,
 			  uint32_t *ts_frac)
 {
+	// TTL 抽出ヘルパーは有効な cmsg を見つけたときのみ上書きするため、
+	// 受信前にここで一度だけ既定値 0 に初期化する（全プラットフォーム共通）。
+	if (ttl) {
+		*ttl = 0;
+	}
+
 #ifdef _WIN32
 	if (g_wsa_recvmsg == NULL) {
 		return stamp_recv_with_timestamp_fallback(sockfd,
@@ -272,7 +267,6 @@ stamp_recv_with_timestamp(SOCKET sockfd,
 							  buffer_len,
 							  addr,
 							  len,
-							  ttl,
 							  ts_sec,
 							  ts_frac);
 	}
