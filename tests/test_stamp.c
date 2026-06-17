@@ -3291,6 +3291,73 @@ static void test_stamp_get_phc_timestamp_invalid_clockid(void)
 	EXPECT_TRUE(rc == -1,
 		    "stamp_get_phc_timestamp invalid clockid returns -1");
 }
+
+/**
+ * extract_ttl_from_cmsg: IP_TTL / IPV6_HOPLIMIT cmsg からの TTL 抽出を検証
+ */
+static void test_extract_ttl_from_cmsg(void)
+{
+	char control[256];
+	struct msghdr msg;
+	struct iovec iov;
+	char data = 0;
+
+	// IPv4: IP_TTL cmsg → 値が抽出される
+	memset(control, 0, sizeof(control));
+	memset(&msg, 0, sizeof(msg));
+	iov.iov_base = &data;
+	iov.iov_len = 1;
+	msg.msg_iov = &iov;
+	msg.msg_iovlen = 1;
+	msg.msg_control = control;
+	msg.msg_controllen = sizeof(control);
+	struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+	cmsg->cmsg_level = IPPROTO_IP;
+	cmsg->cmsg_type = IP_TTL;
+	cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+	int ttl_val = 64;
+	memcpy(CMSG_DATA(cmsg), &ttl_val, sizeof(ttl_val));
+	msg.msg_controllen = (size_t)((char *)cmsg + cmsg->cmsg_len - control);
+	uint8_t ttl = 0;
+	extract_ttl_from_cmsg(&msg, &ttl);
+	EXPECT_TRUE(ttl == 64, "extract_ttl_from_cmsg: IP_TTL value extracted");
+
+#ifdef IPV6_HOPLIMIT
+	// IPv6: IPV6_HOPLIMIT cmsg → 値が抽出される
+	memset(control, 0, sizeof(control));
+	memset(&msg, 0, sizeof(msg));
+	iov.iov_base = &data;
+	iov.iov_len = 1;
+	msg.msg_iov = &iov;
+	msg.msg_iovlen = 1;
+	msg.msg_control = control;
+	msg.msg_controllen = sizeof(control);
+	cmsg = CMSG_FIRSTHDR(&msg);
+	cmsg->cmsg_level = IPPROTO_IPV6;
+	cmsg->cmsg_type = IPV6_HOPLIMIT;
+	cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+	int hop_val = 128;
+	memcpy(CMSG_DATA(cmsg), &hop_val, sizeof(hop_val));
+	msg.msg_controllen = (size_t)((char *)cmsg + cmsg->cmsg_len - control);
+	ttl = 0;
+	extract_ttl_from_cmsg(&msg, &ttl);
+	EXPECT_TRUE(ttl == 128,
+		    "extract_ttl_from_cmsg: IPV6_HOPLIMIT value extracted");
+#endif
+
+	// 制御メッセージなし → ttl は変更されない（呼び出し側の初期値を維持）
+	memset(&msg, 0, sizeof(msg));
+	iov.iov_base = &data;
+	iov.iov_len = 1;
+	msg.msg_iov = &iov;
+	msg.msg_iovlen = 1;
+	msg.msg_control = control;
+	msg.msg_controllen = 0;
+	ttl = 42;
+	extract_ttl_from_cmsg(&msg, &ttl);
+	EXPECT_TRUE(ttl == 42,
+		    "extract_ttl_from_cmsg: no cmsg leaves ttl unchanged");
+}
 #endif // __linux__
 
 // TODO: Known coverage gaps (require socket mocking infrastructure):
@@ -4254,6 +4321,7 @@ int main(void)
 	test_stamp_extract_kernel_timestamp_linux_scm_timestamp_truncated();
 	test_stamp_extract_kernel_timestamp_linux_scm_timestamping_truncated();
 	test_stamp_extract_kernel_timestamp_linux_all_invalid_nsec();
+	test_extract_ttl_from_cmsg();
 #endif
 #ifdef _WIN32
 	test_stamp_extract_kernel_timestamp_windows();

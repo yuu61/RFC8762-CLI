@@ -78,4 +78,5 @@ unusedFunction:tests/test_stamp.c
 # 常に 0 を返すと判定するが、Linux では clock_gettime が失敗しうる防御コーディング
 knownConditionTrueFalse:src/sender.c
 knownConditionTrueFalse:src/reflector.c
+knownConditionTrueFalse:src/stamp_recv.h
 knownConditionTrueFalse:tests/test_stamp.c

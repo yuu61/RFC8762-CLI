@@ -17,7 +17,6 @@
 #endif
 
 static bool g_negative_delay_seen = false;
-static bool g_ptp_mode = false;
 static bool g_oneway_mode = false;
 static uint16_t
 	g_error_estimate_nbo; // htons済み Error Estimate（main()で設定）
@@ -59,10 +58,6 @@ static struct sender_stats g_stats = {
 	.sum_fwd_sq = 0,
 	.sum_bwd_sq = 0,
 };
-
-#ifdef _WIN32
-static LPFN_WSARECVMSG g_wsa_recvmsg = NULL;
-#endif
 
 /**
  * 統計情報の表示
@@ -482,177 +477,6 @@ static int send_stamp_packet(SOCKET sockfd,
 	return 0;
 }
 
-#ifdef _WIN32
-/**
- * WSARecvMsg によるタイムスタンプ付き受信
- */
-__attribute__((hot)) static inline int recv_with_timestamp_wsa(
-	SOCKET sockfd,
-	uint8_t *buffer,
-	size_t buffer_len,
-	struct sockaddr_storage *servaddr,
-	socklen_t *len,
-	uint32_t *t4_sec,
-	uint32_t *t4_frac)
-{
-	WSABUF data_buf;
-	WSAMSG msg;
-	char control[STAMP_CMSG_BUFSIZE];
-	DWORD bytes = 0;
-
-	data_buf.buf = (CHAR *)buffer;
-	data_buf.len = (ULONG)buffer_len;
-	memset(&msg, 0, sizeof(msg));
-	msg.name = (LPSOCKADDR)servaddr;
-	msg.namelen = *len;
-	msg.lpBuffers = &data_buf;
-	msg.dwBufferCount = 1;
-	msg.Control.buf = control;
-	msg.Control.len = sizeof(control);
-
-	if (g_wsa_recvmsg(sockfd, &msg, &bytes, NULL, NULL) == SOCKET_ERROR) {
-		return -1;
-	}
-
-	*len = msg.namelen;
-
-	if (!stamp_extract_kernel_timestamp_windows(&msg,
-						    t4_sec,
-						    t4_frac,
-						    g_ptp_mode)) {
-		if (unlikely(stamp_get_timestamp(t4_sec, t4_frac, g_ptp_mode) !=
-			     0)) {
-			fprintf(stderr,
-				"Warning: Failed to get fallback T4 "
-				"timestamp\n");
-			return -1;
-		}
-	}
-
-	return (int)bytes;
-}
-
-/**
- * recvfrom フォールバック受信（WSARecvMsg 未使用時）
- */
-__attribute__((hot)) static inline int recv_with_timestamp_fallback(
-	SOCKET sockfd,
-	uint8_t *buffer,
-	size_t buffer_len,
-	struct sockaddr_storage *servaddr,
-	socklen_t *len,
-	uint32_t *t4_sec,
-	uint32_t *t4_frac)
-{
-	ssize_t n = recvfrom(sockfd,
-			     (char *)buffer,
-			     (int)buffer_len,
-			     0,
-			     (struct sockaddr *)servaddr,
-			     len);
-	if (n > 0) {
-		if (unlikely(stamp_get_timestamp(t4_sec, t4_frac, g_ptp_mode) !=
-			     0)) {
-			fprintf(stderr,
-				"Warning: Failed to get fallback T4 "
-				"timestamp\n");
-			return -1;
-		}
-	}
-	return (int)n;
-}
-#else
-/**
- * Unix: recvmsg によるタイムスタンプ付き受信
- */
-__attribute__((hot)) static inline int recv_with_timestamp_unix(
-	SOCKET sockfd,
-	uint8_t *buffer,
-	size_t buffer_len,
-	struct sockaddr_storage *servaddr,
-	socklen_t *len,
-	uint32_t *t4_sec,
-	uint32_t *t4_frac)
-{
-	struct msghdr msg;
-	struct iovec iov;
-	char control[STAMP_CMSG_BUFSIZE];
-
-	memset(&msg, 0, sizeof(msg));
-	iov.iov_base = buffer;
-	iov.iov_len = buffer_len;
-	msg.msg_name = servaddr;
-	msg.msg_namelen = *len;
-	msg.msg_iov = &iov;
-	msg.msg_iovlen = 1;
-	msg.msg_control = control;
-	msg.msg_controllen = sizeof(control);
-
-	ssize_t n = recvmsg(sockfd, &msg, 0);
-	if (n < 0) {
-		return -1;
-	}
-
-	*len = msg.msg_namelen;
-
-	if (!stamp_extract_kernel_timestamp_linux(&msg,
-						  t4_sec,
-						  t4_frac,
-						  g_ptp_mode)) {
-		if (unlikely(stamp_get_timestamp(t4_sec, t4_frac, g_ptp_mode) !=
-			     0)) {
-			fprintf(stderr,
-				"Warning: Failed to get fallback T4 "
-				"timestamp\n");
-			return -1;
-		}
-	}
-
-	return (int)n;
-}
-#endif
-
-/**
- * カーネルタイムスタンプ付きでパケットを受信
- * @return 受信バイト数、エラー時-1
- */
-__attribute__((hot)) static inline int recv_with_timestamp(
-	SOCKET sockfd,
-	uint8_t *buffer,
-	size_t buffer_len,
-	struct sockaddr_storage *servaddr,
-	socklen_t *len,
-	uint32_t *t4_sec,
-	uint32_t *t4_frac)
-{
-#ifdef _WIN32
-	if (g_wsa_recvmsg != NULL) {
-		return recv_with_timestamp_wsa(sockfd,
-					       buffer,
-					       buffer_len,
-					       servaddr,
-					       len,
-					       t4_sec,
-					       t4_frac);
-	}
-	return recv_with_timestamp_fallback(sockfd,
-					    buffer,
-					    buffer_len,
-					    servaddr,
-					    len,
-					    t4_sec,
-					    t4_frac);
-#else
-	return recv_with_timestamp_unix(sockfd,
-					buffer,
-					buffer_len,
-					servaddr,
-					len,
-					t4_sec,
-					t4_frac);
-#endif
-}
-
 /**
  * RTT 統計の更新
  */
@@ -824,13 +648,14 @@ static int receive_and_process_packet(
 	uint32_t t4_sec = 0;
 	uint32_t t4_frac = 0;
 
-	int n = recv_with_timestamp(sockfd,
-				    buffer,
-				    buffer_len,
-				    &recvaddr,
-				    &len,
-				    &t4_sec,
-				    &t4_frac);
+	int n = stamp_recv_with_timestamp(sockfd,
+					  buffer,
+					  buffer_len,
+					  &recvaddr,
+					  &len,
+					  NULL,
+					  &t4_sec,
+					  &t4_frac);
 	if (unlikely(n < 0)) {
 #ifdef _WIN32
 		if (SOCKET_ERRNO == WSAETIMEDOUT)

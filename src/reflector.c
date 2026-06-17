@@ -23,7 +23,6 @@ static struct reflector_stats g_stats = {0, 0};
 #define REFLECTOR_IFNAME (NULL)
 #endif
 
-static bool g_ptp_mode = false;
 static uint16_t
 	g_error_estimate_nbo; // htons済み Error Estimate（main()で設定）
 static bool g_warned_ttl_unavailable = false;
@@ -273,43 +272,6 @@ __attribute__((cold)) static void print_usage(const char *prog)
 	fprintf(stderr,
 		"  (default: dual-stack, accepting both IPv4 and IPv6)\n");
 }
-
-#ifdef _WIN32
-static LPFN_WSARECVMSG g_wsa_recvmsg = NULL;
-#endif
-
-#ifndef _WIN32
-/**
- * cmsgからTTL/Hop Limitを抽出（Linux用）
- */
-__attribute__((hot)) static inline void extract_ttl_from_cmsg(struct msghdr *msg, uint8_t *ttl)
-{
-	struct cmsghdr *cmsg;
-	for (cmsg = CMSG_FIRSTHDR(msg); cmsg != NULL;
-	     cmsg = CMSG_NXTHDR(msg, cmsg)) {
-		if (cmsg->cmsg_level == IPPROTO_IP &&
-		    cmsg->cmsg_type == IP_TTL &&
-		    (size_t)cmsg->cmsg_len >= CMSG_LEN(sizeof(int))) {
-			int recv_ttl;
-			memcpy(&recv_ttl, CMSG_DATA(cmsg), sizeof(recv_ttl));
-			if (recv_ttl >= 0 && recv_ttl <= IP_TTL_MAX) {
-				*ttl = (uint8_t)recv_ttl;
-			}
-		}
-#ifdef IPV6_HOPLIMIT
-		if (cmsg->cmsg_level == IPPROTO_IPV6 &&
-		    cmsg->cmsg_type == IPV6_HOPLIMIT &&
-		    (size_t)cmsg->cmsg_len >= CMSG_LEN(sizeof(int))) {
-			int recv_hop;
-			memcpy(&recv_hop, CMSG_DATA(cmsg), sizeof(recv_hop));
-			if (recv_hop >= 0 && recv_hop <= IP_TTL_MAX) {
-				*ttl = (uint8_t)recv_hop;
-			}
-		}
-#endif
-	}
-}
-#endif
 
 /**
  * 受信TTL/Hop Limitオプションの設定
@@ -699,247 +661,6 @@ __attribute__((hot)) static inline int reflect_packet(
 	return 0;
 }
 
-#ifdef _WIN32
-/**
- * Windows: WSAMSG から TTL/Hop Limit を抽出
- */
-static inline void extract_ttl_from_wsamsg(WSAMSG *msg, uint8_t *ttl)
-{
-	WSACMSGHDR *cmsg;
-#if defined(__GNUC__) && !defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wsign-conversion"
-#endif
-	for (cmsg = WSA_CMSG_FIRSTHDR(msg); cmsg != NULL;
-	     cmsg = WSA_CMSG_NXTHDR(msg, cmsg)) {
-#if defined(__GNUC__) && !defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
-		if (cmsg->cmsg_level == IPPROTO_IP &&
-		    cmsg->cmsg_type == IP_TTL &&
-		    cmsg->cmsg_len >= WSA_CMSGDATA_ALIGN(sizeof(WSACMSGHDR)) +
-					      sizeof(int)) {
-			int recv_ttl;
-			memcpy(&recv_ttl,
-			       WSA_CMSG_DATA(cmsg),
-			       sizeof(recv_ttl));
-			if (recv_ttl >= 0 && recv_ttl <= IP_TTL_MAX) {
-				*ttl = (uint8_t)recv_ttl;
-			}
-		}
-#ifdef IPV6_HOPLIMIT
-		if (cmsg->cmsg_level == IPPROTO_IPV6 &&
-		    cmsg->cmsg_type == IPV6_HOPLIMIT &&
-		    cmsg->cmsg_len >= WSA_CMSGDATA_ALIGN(sizeof(WSACMSGHDR)) +
-					      sizeof(int)) {
-			int recv_hop;
-			memcpy(&recv_hop,
-			       WSA_CMSG_DATA(cmsg),
-			       sizeof(recv_hop));
-			if (recv_hop >= 0 && recv_hop <= IP_TTL_MAX) {
-				*ttl = (uint8_t)recv_hop;
-			}
-		}
-#endif
-	}
-}
-
-/**
- * Windows: WSARecvMsg によるタイムスタンプ付き受信
- */
-__attribute__((hot)) static inline int recv_stamp_packet_wsa(
-	SOCKET sockfd,
-	uint8_t *buffer,
-	int buffer_len,
-	struct sockaddr_storage *cliaddr,
-	socklen_t *len,
-	uint8_t *ttl,
-	uint32_t *t2_sec,
-	uint32_t *t2_frac)
-{
-	WSABUF data_buf;
-	WSAMSG msg;
-	char control[STAMP_CMSG_BUFSIZE];
-	DWORD bytes = 0;
-
-	data_buf.buf = (CHAR *)buffer;
-	data_buf.len = (ULONG)buffer_len;
-	memset(&msg, 0, sizeof(msg));
-	msg.name = (LPSOCKADDR)cliaddr;
-	msg.namelen = *len;
-	msg.lpBuffers = &data_buf;
-	msg.dwBufferCount = 1;
-	msg.Control.buf = control;
-	msg.Control.len = sizeof(control);
-
-	if (g_wsa_recvmsg(sockfd, &msg, &bytes, NULL, NULL) == SOCKET_ERROR) {
-		return -1;
-	}
-
-	*len = msg.namelen;
-
-	if (t2_sec && t2_frac) {
-		if (!stamp_extract_kernel_timestamp_windows(&msg,
-							    t2_sec,
-							    t2_frac,
-							    g_ptp_mode)) {
-			if (unlikely(stamp_get_timestamp(t2_sec,
-							 t2_frac,
-							 g_ptp_mode) != 0)) {
-				fprintf(stderr,
-					"Warning: Failed to get fallback T2 "
-					"timestamp\n");
-				return -1;
-			}
-		}
-	}
-
-	if (ttl) {
-		extract_ttl_from_wsamsg(&msg, ttl);
-	}
-
-	return (int)bytes;
-}
-
-/**
- * Windows: recvfrom フォールバック受信
- */
-__attribute__((hot)) static inline int recv_stamp_packet_fallback(
-	SOCKET sockfd,
-	uint8_t *buffer,
-	int buffer_len,
-	struct sockaddr_storage *cliaddr,
-	socklen_t *len,
-	uint32_t *t2_sec,
-	uint32_t *t2_frac)
-{
-	int n = recvfrom(sockfd,
-			 (char *)buffer,
-			 buffer_len,
-			 0,
-			 (struct sockaddr *)cliaddr,
-			 len);
-	if (n > 0 && t2_sec && t2_frac) {
-		if (unlikely(stamp_get_timestamp(t2_sec, t2_frac, g_ptp_mode) !=
-			     0)) {
-			fprintf(stderr,
-				"Warning: Failed to get fallback T2 "
-				"timestamp\n");
-			return -1;
-		}
-	}
-	return n;
-}
-#else
-/**
- * Unix: recvmsg によるタイムスタンプ付き受信
- */
-__attribute__((hot)) static inline int recv_stamp_packet_unix(
-	SOCKET sockfd,
-	uint8_t *buffer,
-	int buffer_len,
-	struct sockaddr_storage *cliaddr,
-	socklen_t *len,
-	uint8_t *ttl,
-	uint32_t *t2_sec,
-	uint32_t *t2_frac)
-{
-	struct msghdr msg;
-	struct iovec iov;
-	char control[STAMP_CMSG_BUFSIZE];
-
-	if (ttl) {
-		*ttl = 0;
-	}
-
-	memset(&msg, 0, sizeof(msg));
-	iov.iov_base = buffer;
-	iov.iov_len = (size_t)buffer_len;
-	msg.msg_name = cliaddr;
-	msg.msg_namelen = *len;
-	msg.msg_iov = &iov;
-	msg.msg_iovlen = 1;
-	msg.msg_control = control;
-	msg.msg_controllen = sizeof(control);
-
-	ssize_t n = recvmsg(sockfd, &msg, 0);
-	if (unlikely(n < 0)) {
-		return -1;
-	}
-
-	*len = msg.msg_namelen;
-
-	if (t2_sec && t2_frac) {
-		if (!stamp_extract_kernel_timestamp_linux(&msg,
-							  t2_sec,
-							  t2_frac,
-							  g_ptp_mode)) {
-			if (unlikely(stamp_get_timestamp(t2_sec,
-							 t2_frac,
-							 g_ptp_mode) != 0)) {
-				fprintf(stderr,
-					"Warning: Failed to get fallback T2 "
-					"timestamp\n");
-				return -1;
-			}
-		}
-	}
-
-	if (ttl) {
-		extract_ttl_from_cmsg(&msg, ttl);
-	}
-
-	return (int)n;
-}
-#endif
-
-/**
- * STAMPパケットの受信（タイムスタンプ付き）
- * @return 受信バイト数、エラー時-1
- */
-__attribute__((hot)) static inline int recv_stamp_packet(
-	SOCKET sockfd,
-	uint8_t *buffer,
-	int buffer_len,
-	struct sockaddr_storage *cliaddr,
-	socklen_t *len,
-	uint8_t *ttl,
-	uint32_t *t2_sec,
-	uint32_t *t2_frac)
-{
-#ifdef _WIN32
-	if (ttl) {
-		*ttl = 0;
-	}
-	if (g_wsa_recvmsg == NULL) {
-		return recv_stamp_packet_fallback(sockfd,
-						  buffer,
-						  buffer_len,
-						  cliaddr,
-						  len,
-						  t2_sec,
-						  t2_frac);
-	}
-	return recv_stamp_packet_wsa(sockfd,
-				     buffer,
-				     buffer_len,
-				     cliaddr,
-				     len,
-				     ttl,
-				     t2_sec,
-				     t2_frac);
-#else
-	return recv_stamp_packet_unix(sockfd,
-				      buffer,
-				      buffer_len,
-				      cliaddr,
-				      len,
-				      ttl,
-				      t2_sec,
-				      t2_frac);
-#endif
-}
-
 /**
  * reflector のコマンドラインオプション
  */
@@ -1114,14 +835,14 @@ __attribute__((hot)) static void handle_one_packet(
 	uint32_t t2_frac = 0;
 
 	/* Step 1: パケット受信（HW/SW タイムスタンプ付き） */
-	int n = recv_stamp_packet(sockfd,
-				  buffer,
-				  buffer_size,
-				  cliaddr,
-				  len,
-				  &ttl,
-				  &t2_sec,
-				  &t2_frac);
+	int n = stamp_recv_with_timestamp(sockfd,
+					  buffer,
+					  (size_t)buffer_size,
+					  cliaddr,
+					  len,
+					  &ttl,
+					  &t2_sec,
+					  &t2_frac);
 	if (n < 0) {
 		if (!__atomic_load_n(&g_running, __ATOMIC_SEQ_CST)) {
 			return;
