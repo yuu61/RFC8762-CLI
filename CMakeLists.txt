@@ -262,6 +262,7 @@ set(HEADERS
     src/stamp_net.h
     src/stamp_recv.h
     src/stamp_firewall.h
+    src/stamp_validation.h
 )
 
 # Build reflector executable

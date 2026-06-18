@@ -184,64 +184,6 @@ __attribute__((cold)) static void configure_reflector_socket_windows(SOCKET sock
 	stamp_enable_kernel_timestamping_windows(sockfd);
 }
 #else
-#ifdef __linux__
-/**
- * Linux: SO_TIMESTAMPING + HW TS 検出設定
- */
-__attribute__((cold)) static void configure_reflector_so_timestamping(
-	SOCKET sockfd,
-	const char *ifname)
-{
-#ifdef SO_TIMESTAMPING
-	int ts_flags = SOF_TIMESTAMPING_RX_SOFTWARE |
-		       SOF_TIMESTAMPING_TX_SOFTWARE | SOF_TIMESTAMPING_SOFTWARE;
-
-	if (ifname != NULL) {
-		struct stamp_hwts_caps caps;
-		if (stamp_detect_hwts_caps(sockfd, ifname, &caps) == 0 &&
-		    caps.rx_hw) {
-			if (stamp_configure_hwtstamp_filter(sockfd,
-							    ifname,
-							    false) == 0) {
-				ts_flags |= SOF_TIMESTAMPING_RX_HARDWARE |
-					    SOF_TIMESTAMPING_RAW_HARDWARE;
-				fprintf(stderr,
-					"Hardware timestamping "
-					"enabled for RX (T2) "
-					"on %s\n",
-					ifname);
-			} else {
-				fprintf(stderr,
-					"Warning: Failed to "
-					"configure HW "
-					"timestamping on %s; "
-					"using software "
-					"timestamps\n",
-					ifname);
-			}
-		} else {
-			fprintf(stderr,
-				"Warning: NIC %s does not "
-				"support RX HW timestamping; "
-				"using software timestamps\n",
-				ifname);
-		}
-	}
-
-	if (setsockopt(sockfd,
-		       SOL_SOCKET,
-		       SO_TIMESTAMPING,
-		       &ts_flags,
-		       sizeof(ts_flags)) < 0) {
-		DEBUG_LOG("SO_TIMESTAMPING not available (error %d)", errno);
-	} else {
-		DEBUG_LOG("SO_TIMESTAMPING enabled (flags=0x%x)",
-			  (unsigned)ts_flags);
-	}
-#endif
-}
-#endif // __linux__
-
 /**
  * Unix: reflector ソケットのタイムアウト・タイムスタンプ・ビジーポーリング設定
  */
@@ -249,31 +191,41 @@ __attribute__((cold)) static void configure_reflector_socket_unix(
 	SOCKET sockfd,
 	__attribute__((unused)) const char *ifname)
 {
-	struct timeval tv;
-	tv.tv_sec = STAMP_REFLECTOR_TIMEOUT_MS / 1000;
-	tv.tv_usec = (STAMP_REFLECTOR_TIMEOUT_MS % 1000) * 1000L;
-	(void)setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-	(void)setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+	(void)stamp_set_socket_timeouts(sockfd,
+					STAMP_REFLECTOR_TIMEOUT_MS / 1000,
+					(STAMP_REFLECTOR_TIMEOUT_MS % 1000) *
+						1000L,
+					true);
 
 	stamp_enable_so_timestamp(sockfd);
 
 #ifdef __linux__
 #ifdef SO_BUSY_POLL
-	{
-		int busy_poll = STAMP_BUSY_POLL_USEC;
-		if (setsockopt(sockfd,
-			       SOL_SOCKET,
-			       SO_BUSY_POLL,
-			       &busy_poll,
-			       sizeof(busy_poll)) < 0) {
-			DEBUG_LOG("SO_BUSY_POLL not available (error %d)",
-				  errno);
-		} else {
-			DEBUG_LOG("SO_BUSY_POLL enabled (%d usec)", busy_poll);
-		}
+	if (stamp_enable_busy_poll(sockfd) < 0) {
+		DEBUG_LOG("SO_BUSY_POLL not available (error %d)", errno);
+	} else {
+		DEBUG_LOG("SO_BUSY_POLL enabled (%d usec)", STAMP_BUSY_POLL_USEC);
 	}
 #endif
-	configure_reflector_so_timestamping(sockfd, ifname);
+
+	// reflector は RX HW (T2) のみ。RX HW 非対応 NIC は警告を出す。
+#ifdef SO_TIMESTAMPING
+	struct stamp_so_timestamping_opts ts_opts = {
+		.ifname = ifname,
+		.want_tx_hw = false,
+		.require_rx_hw = true,
+		.hw_kind = "RX HW",
+		.rx_label = "RX (T2)",
+		.tx_label = NULL,
+	};
+	int ts_flags = 0;
+	if (stamp_setup_so_timestamping(sockfd, &ts_opts, NULL, &ts_flags) < 0) {
+		DEBUG_LOG("SO_TIMESTAMPING not available (error %d)", errno);
+	} else {
+		DEBUG_LOG("SO_TIMESTAMPING enabled (flags=0x%x)",
+			  (unsigned)ts_flags);
+	}
+#endif
 #endif // __linux__
 }
 #endif

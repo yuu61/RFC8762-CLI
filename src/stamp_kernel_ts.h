@@ -196,6 +196,37 @@ static inline void stamp_enable_so_timestamp(SOCKET sockfd)
 #endif
 }
 
+/**
+ * SO_RCVTIMEO（および任意で SO_SNDTIMEO）を timeval で設定（Sender/Reflector 共通）
+ * @param sockfd ソケットディスクリプタ
+ * @param tv_sec タイムアウト秒
+ * @param tv_usec タイムアウトマイクロ秒
+ * @param set_sndtimeo true の場合 SO_SNDTIMEO も同値で設定
+ * @return SO_RCVTIMEO の setsockopt 戻り値（0=成功, <0=失敗）
+ */
+static inline int stamp_set_socket_timeouts(SOCKET sockfd,
+					    long tv_sec,
+					    long tv_usec,
+					    bool set_sndtimeo)
+{
+	struct timeval tv;
+	tv.tv_sec = (time_t)tv_sec;
+	tv.tv_usec = (suseconds_t)tv_usec;
+	int rc = setsockopt(sockfd,
+			    SOL_SOCKET,
+			    SO_RCVTIMEO,
+			    (const char *)&tv,
+			    sizeof(tv));
+	if (set_sndtimeo) {
+		(void)setsockopt(sockfd,
+				 SOL_SOCKET,
+				 SO_SNDTIMEO,
+				 (const char *)&tv,
+				 sizeof(tv));
+	}
+	return rc;
+}
+
 #ifdef __linux__
 #ifdef SCM_TIMESTAMPING
 /**
@@ -654,6 +685,157 @@ static inline int stamp_init_phc(int sockfd,
 	}
 	fprintf(stderr, "PHC clock enabled: /dev/ptp%d\n", caps.phc_index);
 	return 0;
+}
+
+/**
+ * SO_BUSY_POLL（ビジーポーリングでレイテンシ削減）を設定
+ * @param sockfd ソケットディスクリプタ
+ * @return setsockopt 戻り値（SO_BUSY_POLL 未定義時は 0）。ログは呼び出し元に委ねる。
+ */
+static inline int stamp_enable_busy_poll(int sockfd)
+{
+#ifdef SO_BUSY_POLL
+	int busy_poll = STAMP_BUSY_POLL_USEC;
+	return setsockopt(sockfd,
+			  SOL_SOCKET,
+			  SO_BUSY_POLL,
+			  &busy_poll,
+			  sizeof(busy_poll));
+#else
+	(void)sockfd;
+	return 0;
+#endif
+}
+
+/**
+ * Sender/Reflector で共通の SO_TIMESTAMPING 設定パラメータ。
+ * 出力メッセージの文言差（RX/TX ラベル・HW 種別）を呼び出し元から渡すことで、
+ * 汎用ヘルパーに STAMP のタイムスタンプ点（T1/T2/T4）の知識を持ち込まない。
+ */
+struct stamp_so_timestamping_opts {
+	const char *ifname;   // インターフェース名（NULL なら HW 検出をスキップ）
+	bool want_tx_hw;      // TX HW タイムスタンプを要求（sender=true, reflector=false）
+	bool require_rx_hw;   // RX HW 非対応時に警告（reflector=true, sender=false）
+	const char *hw_kind;  // 非対応警告の種別文言（"HW" / "RX HW"）
+	const char *rx_label; // RX 有効化メッセージのラベル（"RX (T4)" / "RX (T2)"）
+	const char *tx_label; // TX 有効化メッセージのラベル（"TX (T1)"、reflector は NULL）
+};
+
+/**
+ * HW タイムスタンプ能力から SO_TIMESTAMPING フラグを構築（ソケット非依存の純粋関数）
+ * @param caps HW タイムスタンプ能力（NULL ならソフトウェアフラグのみ）
+ * @param want_tx_hw TX HW タイムスタンプを要求するか
+ * @param out_tx_hw TX HW が有効化されたかを返す（NULL 不可）
+ * @return SO_TIMESTAMPING に渡すフラグ値
+ */
+static inline int
+stamp_build_so_timestamping_flags(const struct stamp_hwts_caps *caps,
+				  bool want_tx_hw,
+				  bool *out_tx_hw)
+{
+	int flags = SOF_TIMESTAMPING_RX_SOFTWARE |
+		    SOF_TIMESTAMPING_TX_SOFTWARE | SOF_TIMESTAMPING_SOFTWARE;
+	*out_tx_hw = false;
+	if (caps != NULL) {
+		if (caps->rx_hw) {
+			flags |= SOF_TIMESTAMPING_RX_HARDWARE |
+				 SOF_TIMESTAMPING_RAW_HARDWARE;
+		}
+		if (want_tx_hw && caps->tx_hw) {
+			flags |= SOF_TIMESTAMPING_TX_HARDWARE |
+				 SOF_TIMESTAMPING_OPT_ID |
+				 SOF_TIMESTAMPING_OPT_TSONLY;
+			*out_tx_hw = true;
+		}
+	}
+	return flags;
+}
+
+/**
+ * SO_TIMESTAMPING の設定（HW タイムスタンプ検出 + フラグ構築 + setsockopt）。
+ * Sender/Reflector 共通。文言差は opts で吸収し、結果ログ（DEBUG_LOG 等）は
+ * 戻り値・out_flags を介して呼び出し元に委ねる。
+ * @param sockfd ソケットディスクリプタ
+ * @param opts 設定パラメータ
+ * @param out_tx_hw_enabled TX HW が有効化されたかを返す（NULL 可、sender 用）
+ * @param out_flags 設定した SO_TIMESTAMPING フラグを返す（NULL 可、reflector のログ用）
+ * @return setsockopt(SO_TIMESTAMPING) の戻り値（0=成功, <0=失敗）
+ */
+__attribute__((cold)) static inline int
+stamp_setup_so_timestamping(SOCKET sockfd,
+			    const struct stamp_so_timestamping_opts *opts,
+			    bool *out_tx_hw_enabled,
+			    int *out_flags)
+{
+#ifdef SO_TIMESTAMPING
+	struct stamp_hwts_caps caps;
+	bool hw_active = false;
+
+	if (opts->ifname != NULL) {
+		if (stamp_detect_hwts_caps(sockfd, opts->ifname, &caps) == 0 &&
+		    (!opts->require_rx_hw || caps.rx_hw)) {
+			bool need_tx = opts->want_tx_hw && caps.tx_hw;
+			if (stamp_configure_hwtstamp_filter(sockfd,
+							    opts->ifname,
+							    need_tx) == 0) {
+				hw_active = true;
+			} else {
+				fprintf(stderr,
+					"Warning: Failed to configure HW "
+					"timestamping on %s; using software "
+					"timestamps\n",
+					opts->ifname);
+			}
+		} else {
+			fprintf(stderr,
+				"Warning: NIC %s does not support %s "
+				"timestamping; using software timestamps\n",
+				opts->ifname,
+				opts->hw_kind);
+		}
+	}
+
+	bool tx_enabled = false;
+	int flags = stamp_build_so_timestamping_flags(hw_active ? &caps : NULL,
+						      opts->want_tx_hw,
+						      &tx_enabled);
+	if (hw_active) {
+		if (caps.rx_hw) {
+			fprintf(stderr,
+				"Hardware timestamping enabled for %s on %s\n",
+				opts->rx_label,
+				opts->ifname);
+		}
+		if (tx_enabled) {
+			fprintf(stderr,
+				"Hardware timestamping enabled for %s on %s\n",
+				opts->tx_label,
+				opts->ifname);
+		}
+	}
+
+	if (out_tx_hw_enabled != NULL) {
+		*out_tx_hw_enabled = tx_enabled;
+	}
+	if (out_flags != NULL) {
+		*out_flags = flags;
+	}
+	return setsockopt(sockfd,
+			  SOL_SOCKET,
+			  SO_TIMESTAMPING,
+			  &flags,
+			  sizeof(flags));
+#else
+	(void)sockfd;
+	(void)opts;
+	if (out_tx_hw_enabled != NULL) {
+		*out_tx_hw_enabled = false;
+	}
+	if (out_flags != NULL) {
+		*out_flags = 0;
+	}
+	return 0;
+#endif // SO_TIMESTAMPING
 }
 
 #endif // __linux__

@@ -141,54 +141,6 @@ __attribute__((cold)) static void print_usage(const char *prog)
  * ソケットの初期化
  * @return ソケットディスクリプタ、エラー時INVALID_SOCKET
  */
-#ifdef __linux__
-/**
- * ハードウェアタイムスタンプの設定
- * @return 設定したSOF_TIMESTAMPINGフラグのビットマスク（HW分のみ）
- */
-__attribute__((cold)) static int setup_hw_timestamping(SOCKET sockfd,
-						       const char *ifname)
-{
-	int hw_flags = 0;
-	struct stamp_hwts_caps caps;
-	if (stamp_detect_hwts_caps(sockfd, ifname, &caps) != 0) {
-		fprintf(stderr,
-			"Warning: NIC %s does not "
-			"support HW timestamping; "
-			"using software timestamps\n",
-			ifname);
-		return 0;
-	}
-	bool need_tx = caps.tx_hw;
-	if (stamp_configure_hwtstamp_filter(sockfd, ifname, need_tx) != 0) {
-		fprintf(stderr,
-			"Warning: Failed to "
-			"configure HW "
-			"timestamping on %s; "
-			"using software "
-			"timestamps\n",
-			ifname);
-		return 0;
-	}
-	if (caps.rx_hw) {
-		hw_flags |= SOF_TIMESTAMPING_RX_HARDWARE |
-			    SOF_TIMESTAMPING_RAW_HARDWARE;
-		fprintf(stderr,
-			"Hardware timestamping enabled for RX (T4) on %s\n",
-			ifname);
-	}
-	if (caps.tx_hw) {
-		hw_flags |= SOF_TIMESTAMPING_TX_HARDWARE |
-			    SOF_TIMESTAMPING_OPT_ID |
-			    SOF_TIMESTAMPING_OPT_TSONLY;
-		g_tx_hw_timestamp_enabled = true;
-		fprintf(stderr,
-			"Hardware timestamping enabled for TX (T1) on %s\n",
-			ifname);
-	}
-	return hw_flags;
-}
-#endif
 
 #ifdef _WIN32
 /**
@@ -225,14 +177,10 @@ __attribute__((cold)) static int configure_sender_socket_unix(
 	SOCKET sockfd,
 	__attribute__((unused)) const char *ifname)
 {
-	struct timeval tv;
-	tv.tv_sec = SOCKET_TIMEOUT_SEC;
-	tv.tv_usec = SOCKET_TIMEOUT_USEC;
-	if (setsockopt(sockfd,
-		       SOL_SOCKET,
-		       SO_RCVTIMEO,
-		       (const char *)&tv,
-		       sizeof(tv)) < 0) {
+	if (stamp_set_socket_timeouts(sockfd,
+				      SOCKET_TIMEOUT_SEC,
+				      SOCKET_TIMEOUT_USEC,
+				      false) < 0) {
 		PRINT_SOCKET_ERROR("setsockopt failed");
 		return -1;
 	}
@@ -240,37 +188,23 @@ __attribute__((cold)) static int configure_sender_socket_unix(
 	stamp_enable_so_timestamp(sockfd);
 
 #ifdef __linux__
-	// SO_BUSY_POLL: ビジーポーリングでレイテンシ削減
-#ifdef SO_BUSY_POLL
-	{
-		int busy_poll = STAMP_BUSY_POLL_USEC;
-		(void)setsockopt(sockfd,
-				 SOL_SOCKET,
-				 SO_BUSY_POLL,
-				 &busy_poll,
-				 sizeof(busy_poll));
-	}
-#endif
+	// SO_BUSY_POLL: ビジーポーリングでレイテンシ削減（成否は無視）
+	(void)stamp_enable_busy_poll(sockfd);
 
-	// SO_TIMESTAMPING: カーネルレベルの送受信タイムスタンプ
-#ifdef SO_TIMESTAMPING
-	{
-		int ts_flags = SOF_TIMESTAMPING_RX_SOFTWARE |
-			       SOF_TIMESTAMPING_TX_SOFTWARE |
-			       SOF_TIMESTAMPING_SOFTWARE;
-
-		// -i 指定時: ハードウェアタイムスタンプを試行
-		if (ifname != NULL) {
-			ts_flags |= setup_hw_timestamping(sockfd, ifname);
-		}
-
-		(void)setsockopt(sockfd,
-				 SOL_SOCKET,
-				 SO_TIMESTAMPING,
-				 &ts_flags,
-				 sizeof(ts_flags));
-	}
-#endif
+	// SO_TIMESTAMPING: カーネルレベルの送受信タイムスタンプ + HW 検出。
+	// sender は TX HW (T1) も試行し、g_tx_hw_timestamp_enabled を更新する。
+	struct stamp_so_timestamping_opts ts_opts = {
+		.ifname = ifname,
+		.want_tx_hw = true,
+		.require_rx_hw = false,
+		.hw_kind = "HW",
+		.rx_label = "RX (T4)",
+		.tx_label = "TX (T1)",
+	};
+	(void)stamp_setup_so_timestamping(sockfd,
+					  &ts_opts,
+					  &g_tx_hw_timestamp_enabled,
+					  NULL);
 #endif // __linux__
 
 	return 0;

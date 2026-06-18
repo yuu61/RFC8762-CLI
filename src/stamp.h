@@ -11,5 +11,6 @@
 #include "stamp_protocol.h"
 #include "stamp_recv.h"
 #include "stamp_time.h"
+#include "stamp_validation.h"
 
 #endif // STAMP_H
