@@ -11,7 +11,7 @@
 #     --force \
 #     -I src/ src/ tests/
 
-# 対象ソース: src/stamp_globals.c src/sender.c src/reflector.c
+# 対象ソース: src/stamp_globals.c src/sender.c src/reflector.c src/stamp_firewall.c
 # 対象ヘッダー: src/stamp*.h
 # テスト: tests/test_stamp.c
 
@@ -45,7 +45,7 @@ shiftTooManyBitsSigned:src/stamp_time.h
 preprocessorErrorDirective:src/stamp_platform.h
 
 # ================================================================
-# sender.c / reflector.c — GCC 拡張・セキュリティパス
+# sender.c / reflector.c / stamp_firewall.c — GCC 拡張・セキュリティパス
 # ================================================================
 
 # cleanup 属性 (GCC 拡張) による誤検知
@@ -53,11 +53,11 @@ autoVariables:src/sender.c
 autoVariables:src/reflector.c
 
 # execvp() の argv パラメータに対する const ポインタ誤検知
-# (run_nft_command 内の fork+execvp パターン)
-constParameterPointer:src/reflector.c
+# (stamp_firewall.c の run_nft_command 内 fork+execvp パターン)
+constParameterPointer:src/stamp_firewall.c
 
 # fork() 後の _exit() パスでのリソースリーク誤検知
-memleak:src/reflector.c
+memleak:src/stamp_firewall.c
 
 # ================================================================
 # stamp_globals.c — グローバル変数定義

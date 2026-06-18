@@ -25,12 +25,17 @@ cmake --preset asan && cmake --build --preset asan && ctest --preset asan
 
 ```
 src/
-├── stamp.h             # アンブレラヘッダー（5つの専用ヘッダーを include）
+├── stamp.h             # アンブレラヘッダー（7つの専用ヘッダーを include）
 ├── stamp_platform.h    # OS 判定・型定義・getopt 互換レイヤー
 ├── stamp_protocol.h    # パケット構造体・プロトコル定数
 ├── stamp_time.h        # NTP/PTP タイムスタンプ変換・遅延計算・統計
+├── stamp_calc.h        # 純粋計算・パケット構築関数
 ├── stamp_kernel_ts.h   # SO_TIMESTAMPING / HW タイムスタンプ・PHC 連携
+├── stamp_recv.h        # タイムスタンプ付き受信 plumbing（Sender/Reflector 共通）
 ├── stamp_net.h         # シグナルハンドラ・アドレス解決
+├── stamp_firewall.h    # ファイアウォール自動設定（reflector 専用・非 Windows）
+├── stamp_firewall.c    # ファイアウォール自動設定の実装（nftables）
+├── stamp_globals.c     # グローバル変数定義（シグナルハンドラ共有変数）
 ├── sender.c            # Sender 実装
 └── reflector.c         # Reflector 実装
 tests/

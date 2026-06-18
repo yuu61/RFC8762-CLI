@@ -27,6 +27,8 @@ RFC8762-CLI/
 │   ├── stamp_time.h      # タイムスタンプ取得・変換・計算関数
 │   ├── stamp_kernel_ts.h # カーネル/HW タイムスタンプ・PHC 連携
 │   ├── stamp_net.h       # シグナル処理・アドレスユーティリティ
+│   ├── stamp_firewall.h  # ファイアウォール自動設定（reflector 専用・非 Windows）
+│   ├── stamp_firewall.c  # ファイアウォール自動設定の実装
 │   ├── reflector.c       # Reflector 実装
 │   └── sender.c          # Sender 実装
 └── tests/
@@ -43,7 +45,8 @@ RFC8762-CLI/
 | `stamp_protocol.h` | RFC 8762 パケット構造体、プロトコル定数、シーケンス番号管理 |
 | `stamp_time.h` | NTP/PTP タイムスタンプ変換、遅延計算、統計処理 |
 | `stamp_kernel_ts.h` | `SO_TIMESTAMPING` / HW タイムスタンプ制御、PHC デバイス連携 |
-| `stamp_net.h` | シグナルハンドラ、アドレス解決、ファイアウォール自動設定 |
+| `stamp_net.h` | シグナルハンドラ、アドレス解決 |
+| `stamp_firewall.h` / `.c` | ファイアウォール自動設定（Linux/UNIX のみ・nftables による UDP ポート許可ルールの自動追加/削除・reflector 専用） |
 
 この分割により:
 

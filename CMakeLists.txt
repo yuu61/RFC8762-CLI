@@ -261,10 +261,11 @@ set(HEADERS
     src/stamp_kernel_ts.h
     src/stamp_net.h
     src/stamp_recv.h
+    src/stamp_firewall.h
 )
 
 # Build reflector executable
-add_executable(reflector src/reflector.c src/stamp_globals.c ${HEADERS})
+add_executable(reflector src/reflector.c src/stamp_firewall.c src/stamp_globals.c ${HEADERS})
 target_link_libraries(reflector PRIVATE ${PLATFORM_LIBS})
 target_include_directories(reflector PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
@@ -281,7 +282,7 @@ install(TARGETS reflector sender RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 enable_testing()
 
 # Build test executable
-add_executable(test_stamp tests/test_stamp.c src/stamp_globals.c ${HEADERS})
+add_executable(test_stamp tests/test_stamp.c src/stamp_firewall.c src/stamp_globals.c ${HEADERS})
 target_link_libraries(test_stamp PRIVATE ${PLATFORM_LIBS})
 target_include_directories(test_stamp PRIVATE ${CMAKE_SOURCE_DIR}/src)
 # テストコードでは argv[] に文字列リテラルを直接代入するため緩和

@@ -20,6 +20,8 @@
 #include <string.h>
 #ifndef _WIN32
 #include <sys/wait.h>
+
+#include "../src/stamp_firewall.h"
 #endif
 
 static int g_tests_run = 0;
@@ -2825,6 +2827,46 @@ static void reset_global_state(void)
 }
 
 /**
+ * stamp_firewall_format_port: 有効ポートの十進文字列化
+ */
+static void test_firewall_format_port_valid(void)
+{
+	char buf[16];
+	EXPECT_TRUE(stamp_firewall_format_port(buf, sizeof(buf), 8888) == 0,
+		    "format_port(8888) succeeds");
+	EXPECT_TRUE(strcmp(buf, "8888") == 0, "format_port(8888) == \"8888\"");
+
+	EXPECT_TRUE(stamp_firewall_format_port(buf, sizeof(buf), 1) == 0,
+		    "format_port(1) succeeds");
+	EXPECT_TRUE(strcmp(buf, "1") == 0, "format_port(1) == \"1\"");
+
+	EXPECT_TRUE(stamp_firewall_format_port(buf, sizeof(buf), 65535) == 0,
+		    "format_port(65535) succeeds");
+	EXPECT_TRUE(strcmp(buf, "65535") == 0,
+		    "format_port(65535) == \"65535\"");
+}
+
+/**
+ * stamp_firewall_format_port: port==0 を無効として拒否
+ */
+static void test_firewall_format_port_rejects_zero(void)
+{
+	char buf[16];
+	EXPECT_TRUE(stamp_firewall_format_port(buf, sizeof(buf), 0) == -1,
+		    "format_port(0) returns -1");
+}
+
+/**
+ * stamp_firewall_format_port: バッファ不足（切り詰め）を拒否
+ */
+static void test_firewall_format_port_rejects_truncation(void)
+{
+	char buf[3]; // "65535" には不足
+	EXPECT_TRUE(stamp_firewall_format_port(buf, sizeof(buf), 65535) == -1,
+		    "format_port truncation returns -1");
+}
+
+/**
  * 6a. シグナルハンドラテスト (Linux/POSIX)
  */
 static void test_signal_handler(void)
@@ -4292,6 +4334,9 @@ int main(void)
 
 #ifndef _WIN32
 	test_signal_handler();
+	test_firewall_format_port_valid();
+	test_firewall_format_port_rejects_zero();
+	test_firewall_format_port_rejects_truncation();
 #endif
 
 	test_protocol_constants();
