@@ -2628,6 +2628,72 @@ static void test_hwts_caps_phc_index(void)
 		SKIP_TEST("test_hwts_caps_phc_index (socket creation failed)");
 	}
 }
+
+// stamp_build_so_timestamping_flags（純粋関数）のテスト
+// SO_TIMESTAMPING フラグ構築ロジックを sender/reflector の分岐ごとに検証する。
+
+// sender: RX/TX 両方の HW タイムスタンプ対応 NIC で TX HW も有効化される
+static void test_build_so_timestamping_flags_sender(void)
+{
+	struct stamp_hwts_caps caps = {.rx_hw = true,
+				       .tx_hw = true,
+				       .phc_index = -1};
+	bool tx_hw = false;
+	int flags = stamp_build_so_timestamping_flags(&caps, true, &tx_hw);
+	int expected = SOF_TIMESTAMPING_RX_SOFTWARE |
+		       SOF_TIMESTAMPING_TX_SOFTWARE | SOF_TIMESTAMPING_SOFTWARE |
+		       SOF_TIMESTAMPING_RX_HARDWARE |
+		       SOF_TIMESTAMPING_RAW_HARDWARE |
+		       SOF_TIMESTAMPING_TX_HARDWARE | SOF_TIMESTAMPING_OPT_ID |
+		       SOF_TIMESTAMPING_OPT_TSONLY;
+	EXPECT_TRUE(flags == expected, "sender: RX+TX HW flags set");
+	EXPECT_TRUE(tx_hw == true, "sender: out_tx_hw true on TX-capable NIC");
+}
+
+// reflector: want_tx_hw=false なので RX HW のみ立ち、TX HW は立たない
+static void test_build_so_timestamping_flags_reflector(void)
+{
+	struct stamp_hwts_caps caps = {.rx_hw = true,
+				       .tx_hw = true,
+				       .phc_index = -1};
+	bool tx_hw = true; // false に更新されることを確認
+	int flags = stamp_build_so_timestamping_flags(&caps, false, &tx_hw);
+	int expected = SOF_TIMESTAMPING_RX_SOFTWARE |
+		       SOF_TIMESTAMPING_TX_SOFTWARE | SOF_TIMESTAMPING_SOFTWARE |
+		       SOF_TIMESTAMPING_RX_HARDWARE |
+		       SOF_TIMESTAMPING_RAW_HARDWARE;
+	EXPECT_TRUE(flags == expected, "reflector: RX HW only, no TX HW");
+	EXPECT_TRUE(tx_hw == false,
+		    "reflector: out_tx_hw false when want_tx_hw=false");
+}
+
+// インターフェース未指定（caps=NULL）: ソフトウェアフラグのみ
+static void test_build_so_timestamping_flags_no_caps(void)
+{
+	bool tx_hw = true;
+	int flags = stamp_build_so_timestamping_flags(NULL, true, &tx_hw);
+	int expected = SOF_TIMESTAMPING_RX_SOFTWARE |
+		       SOF_TIMESTAMPING_TX_SOFTWARE | SOF_TIMESTAMPING_SOFTWARE;
+	EXPECT_TRUE(flags == expected, "no caps: software flags only");
+	EXPECT_TRUE(tx_hw == false, "no caps: out_tx_hw false");
+}
+
+// RX のみ対応の NIC: want_tx_hw=true でも TX HW は立たない
+static void test_build_so_timestamping_flags_rx_only_nic(void)
+{
+	struct stamp_hwts_caps caps = {.rx_hw = true,
+				       .tx_hw = false,
+				       .phc_index = -1};
+	bool tx_hw = true;
+	int flags = stamp_build_so_timestamping_flags(&caps, true, &tx_hw);
+	int expected = SOF_TIMESTAMPING_RX_SOFTWARE |
+		       SOF_TIMESTAMPING_TX_SOFTWARE | SOF_TIMESTAMPING_SOFTWARE |
+		       SOF_TIMESTAMPING_RX_HARDWARE |
+		       SOF_TIMESTAMPING_RAW_HARDWARE;
+	EXPECT_TRUE(flags == expected,
+		    "RX-only NIC: TX HW not set despite want_tx_hw");
+	EXPECT_TRUE(tx_hw == false, "RX-only NIC: out_tx_hw false");
+}
 #endif // __linux__
 
 // =============================================================================
@@ -4460,6 +4526,10 @@ int main(void)
 	test_phc_timestamp_with_realtime();
 	test_hwts_caps_phc_index();
 	test_stamp_get_phc_timestamp_invalid_clockid();
+	test_build_so_timestamping_flags_sender();
+	test_build_so_timestamping_flags_reflector();
+	test_build_so_timestamping_flags_no_caps();
+	test_build_so_timestamping_flags_rx_only_nic();
 #endif
 
 	// Cleanup helpers
