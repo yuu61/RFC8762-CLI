@@ -85,7 +85,6 @@ typedef int SOCKET;
 #endif
 
 // ユーティリティ定数
-#define FIREWALL_CMD_BUFSIZE	256 // ファイアウォールコマンドバッファサイズ
 #define SLEEP_CHECK_INTERVAL_MS 100 // スリープ中の割り込みチェック間隔（ミリ秒）
 #define MAX_HOSTNAME_LEN	253 // RFC 1035: ホスト名の最大長
 

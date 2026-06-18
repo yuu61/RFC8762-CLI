@@ -78,7 +78,11 @@ Usage: reflector [-4|-6] [-d] [-P] [-c] [-i iface] [port]
 
 ### ファイアウォール自動設定（Linux/UNIX）
 
-Reflector を root 権限で起動すると、iptables/ip6tables で UDP ポート許可ルールを自動追加・削除します。`system()` を利用するため、運用環境では内容を確認し、不要であれば非 root で起動してください。
+Reflector を root 権限で起動すると、**nftables**（`inet` family・IPv4/IPv6 両対応・テーブル名 `stamp_reflector`）で UDP ポート許可ルールを自動追加します。`nft` コマンドは `fork()`+`execvp()` で直接実行し、シェルを介さないためコマンドインジェクションを防止します。
+
+- 正常終了（Ctrl+C / SIGTERM 等）時は `atexit` でルールを自動削除します。
+- SIGKILL や OOM killer による異常終了ではルールが残留するため、その場合は `nft delete table inet stamp_reflector` で手動削除してください。
+- 非 root で起動した場合はファイアウォール設定をスキップします。
 
 ### IPv6 での使用
 
