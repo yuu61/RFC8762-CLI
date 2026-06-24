@@ -312,6 +312,57 @@ static void test_stamp_parse_port(void)
 		    "stamp_parse_port non-numeric rejected");
 	EXPECT_TRUE(stamp_parse_port("-1", &port) != 0,
 		    "stamp_parse_port negative rejected");
+	// 先頭の空白・'+' 符号は拒否（strtoull の暗黙スキップを防ぐ）
+	EXPECT_TRUE(stamp_parse_port(" 80", &port) != 0,
+		    "stamp_parse_port leading space rejected");
+	EXPECT_TRUE(stamp_parse_port("+80", &port) != 0,
+		    "stamp_parse_port leading plus rejected");
+	EXPECT_TRUE(stamp_parse_port("\t80", &port) != 0,
+		    "stamp_parse_port leading tab rejected");
+}
+
+// 汎用 uint32 レンジパーサのテスト
+static void test_stamp_parse_u32_range(void)
+{
+	uint32_t v = 0;
+
+	EXPECT_TRUE(stamp_parse_u32_range("1", &v, UINT32_MAX) == 0 && v == 1,
+		    "stamp_parse_u32_range min value");
+	EXPECT_TRUE(stamp_parse_u32_range("4294967295", &v, UINT32_MAX) == 0 &&
+			    v == UINT32_MAX,
+		    "stamp_parse_u32_range UINT32_MAX value");
+	EXPECT_TRUE(stamp_parse_u32_range("100", &v, 100) == 0 && v == 100,
+		    "stamp_parse_u32_range at max accepted");
+
+	// 0・範囲外・非数・余分な文字・符号・空白・空文字は拒否
+	EXPECT_TRUE(stamp_parse_u32_range("0", &v, UINT32_MAX) != 0,
+		    "stamp_parse_u32_range 0 rejected");
+	EXPECT_TRUE(stamp_parse_u32_range("101", &v, 100) != 0,
+		    "stamp_parse_u32_range over max rejected");
+	EXPECT_TRUE(stamp_parse_u32_range("4294967296", &v, UINT32_MAX) != 0,
+		    "stamp_parse_u32_range overflow rejected");
+	EXPECT_TRUE(stamp_parse_u32_range("12x", &v, UINT32_MAX) != 0,
+		    "stamp_parse_u32_range trailing chars rejected");
+	EXPECT_TRUE(stamp_parse_u32_range("", &v, UINT32_MAX) != 0,
+		    "stamp_parse_u32_range empty rejected");
+	EXPECT_TRUE(stamp_parse_u32_range(" 5", &v, UINT32_MAX) != 0,
+		    "stamp_parse_u32_range leading space rejected");
+	EXPECT_TRUE(stamp_parse_u32_range("+5", &v, UINT32_MAX) != 0,
+		    "stamp_parse_u32_range leading plus rejected");
+	EXPECT_TRUE(stamp_parse_u32_range("-5", &v, UINT32_MAX) != 0,
+		    "stamp_parse_u32_range negative rejected");
+}
+
+// アドレスファミリ表示文字列のテスト
+static void test_stamp_family_str(void)
+{
+	EXPECT_TRUE(strcmp(stamp_family_str(AF_INET), "IPv4") == 0,
+		    "stamp_family_str AF_INET");
+	EXPECT_TRUE(strcmp(stamp_family_str(AF_INET6), "IPv6") == 0,
+		    "stamp_family_str AF_INET6");
+	// 不明ファミリは IPv4 にフォールバック
+	EXPECT_TRUE(strcmp(stamp_family_str(AF_UNSPEC), "IPv4") == 0,
+		    "stamp_family_str AF_UNSPEC fallback");
 }
 
 // IPv6対応ユーティリティ関数のテスト
@@ -3107,6 +3158,38 @@ static void test_stamp_report_write_json_basic(void)
 		    "json NaN field → null");
 	EXPECT_TRUE(strstr(out, "\"packets_tx\": 10") != NULL,
 		    "json has packets_tx");
+	EXPECT_TRUE(strstr(out, "\"samples_truncated\": false") != NULL,
+		    "json has samples_truncated false");
+}
+
+// samples_truncated=true が JSON に反映されることを検証
+static void test_stamp_report_write_json_truncated(void)
+{
+	struct stamp_report r = {
+		.target = "127.0.0.1:862",
+		.family = "IPv4",
+		.samples_truncated = true,
+		.packets_tx = 5,
+		.fields = NULL,
+		.field_count = 0,
+	};
+	FILE *fp = tmpfile();
+	EXPECT_TRUE(fp != NULL, "json trunc tmpfile created");
+	if (fp == NULL) {
+		return;
+	}
+	stamp_report_write_json(fp, &r);
+	if (fseek(fp, 0, SEEK_SET) != 0) {
+		fclose(fp);
+		EXPECT_TRUE(0, "fseek failed");
+		return;
+	}
+	char out[1024] = {0};
+	size_t got = fread(out, 1, sizeof(out) - 1, fp);
+	out[got] = '\0';
+	fclose(fp);
+	EXPECT_TRUE(strstr(out, "\"samples_truncated\": true") != NULL,
+		    "json samples_truncated true");
 }
 
 static void test_stamp_report_write_csv_basic(void)
@@ -3146,6 +3229,8 @@ static void test_stamp_report_write_csv_basic(void)
 		    "csv has version comment");
 	EXPECT_TRUE(strstr(out, "rtt_min_ms,rtt_max_ms") != NULL,
 		    "csv header has keys");
+	EXPECT_TRUE(strstr(out, "oneway,samples_truncated,packets_tx") != NULL,
+		    "csv header has samples_truncated column");
 	// データ行末は ",0.123," + 空(NaN) で終わる
 	EXPECT_TRUE(strstr(out, ",0.123,\n") != NULL,
 		    "csv value then empty NaN field");
@@ -4744,6 +4829,8 @@ int main(void)
 	test_stamp_get_ntp_timestamp();
 	test_byte_order();
 	test_stamp_parse_port();
+	test_stamp_parse_u32_range();
+	test_stamp_family_str();
 	// IPv6対応テスト
 	test_stamp_get_sockaddr_len();
 	test_stamp_sockaddr_get_port();
@@ -4812,6 +4899,7 @@ int main(void)
 	test_stamp_report_json_escape();
 	test_stamp_report_iso8601_utc_format();
 	test_stamp_report_write_json_basic();
+	test_stamp_report_write_json_truncated();
 	test_stamp_report_write_csv_basic();
 	test_stamp_packet_loss_edge_cases();
 

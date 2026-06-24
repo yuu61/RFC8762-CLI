@@ -10,6 +10,39 @@
 #define STAMP_ADDR_PORT_BUFSIZE (INET6_ADDRSTRLEN + 16)
 
 /**
+ * 正の整数文字列を uint32_t に解析（1..max）。
+ * 0・範囲外・非数・余分な文字を拒否する。先頭の空白・符号も拒否するため、
+ * 先頭文字が 10 進数字であることを明示的に検査する（strtoull は空白・'+' を
+ * 黙って読み飛ばすため）。
+ * @param arg 数値文字列
+ * @param out パース結果
+ * @param max 許容する最大値（含む）
+ * @return 成功時 0、エラー時 -1
+ */
+__attribute__((nonnull(1, 2), cold)) static inline int stamp_parse_u32_range(
+	const char *restrict arg,
+	uint32_t *restrict out,
+	uint32_t max)
+{
+	// 先頭の空白・'+'/'-' 符号・空文字を拒否（strtoull はこれらを許容するため）
+	if (arg[0] < '0' || arg[0] > '9') {
+		return -1;
+	}
+
+	char *end = NULL;
+	errno = 0;
+	unsigned long long value = strtoull(arg, &end, 10);
+
+	if (errno == ERANGE || (end && *end != '\0') || value == 0 ||
+	    value > max) {
+		return -1;
+	}
+
+	*out = (uint32_t)value;
+	return 0;
+}
+
+/**
  * ポート番号のパース
  * @param arg ポート番号文字列
  * @param port パース結果を格納するポインタ
@@ -19,23 +52,22 @@ __attribute__((nonnull(1, 2), cold)) static inline int stamp_parse_port(
 	const char *restrict arg,
 	uint16_t *restrict port)
 {
-	char *end = NULL;
-	unsigned long value;
-
-	if (*arg == '\0') {
+	uint32_t value;
+	if (stamp_parse_u32_range(arg, &value, STAMP_MAX_PORT) != 0) {
 		return -1;
 	}
-
-	errno = 0;
-	value = strtoul(arg, &end, 10);
-
-	if (errno == ERANGE || (end && *end != '\0') || value == 0 ||
-	    value > STAMP_MAX_PORT) {
-		return -1;
-	}
-
 	*port = (uint16_t)value;
 	return 0;
+}
+
+/**
+ * アドレスファミリを表示用文字列に変換する。
+ * @param family AF_INET / AF_INET6
+ * @return "IPv6"（AF_INET6）または "IPv4"（それ以外）
+ */
+__attribute__((const)) static inline const char *stamp_family_str(int family)
+{
+	return (family == AF_INET6) ? "IPv6" : "IPv4";
 }
 
 // =============================================================================

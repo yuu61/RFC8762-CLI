@@ -36,6 +36,9 @@ struct stamp_report {
 	const char *family; // "IPv4" / "IPv6"
 	bool ptp;
 	bool oneway;
+	// percentile/PDV が切り捨てサンプルに基づくか（true=サンプル上限到達/確保
+	// 失敗で一部欠落。stderr 警告を見られない機械可読消費者向けの明示フラグ）
+	bool samples_truncated;
 	uint32_t packets_tx;
 	uint32_t packets_rx;
 	uint32_t timeouts;
@@ -145,7 +148,7 @@ __attribute__((nonnull(1, 2))) static inline void
 stamp_report_write_json(FILE *fp, const struct stamp_report *r)
 {
 	char ts[STAMP_REPORT_TS_MAX];
-	stamp_report_iso8601_utc(ts, sizeof(ts));
+	bool ts_ok = (stamp_report_iso8601_utc(ts, sizeof(ts)) == 0);
 	char target[STAMP_REPORT_STR_MAX];
 	stamp_report_json_escape(r->target != NULL ? r->target : "",
 				 target,
@@ -155,7 +158,12 @@ stamp_report_write_json(FILE *fp, const struct stamp_report *r)
 
 	fputs("{\n", fp);
 	fputs("  \"format_version\": \"1.0\",\n", fp);
-	fprintf(fp, "  \"timestamp\": \"%s\",\n", ts);
+	// 生成失敗時は他の欠損値と同じく null を出す（空文字列で偽装しない）
+	if (ts_ok) {
+		fprintf(fp, "  \"timestamp\": \"%s\",\n", ts);
+	} else {
+		fputs("  \"timestamp\": null,\n", fp);
+	}
 	fprintf(fp, "  \"target\": \"%s\",\n", target);
 	fprintf(fp,
 		"  \"family\": \"%s\",\n",
@@ -163,6 +171,9 @@ stamp_report_write_json(FILE *fp, const struct stamp_report *r)
 	fputs("  \"protocol\": \"STAMP\",\n", fp);
 	fprintf(fp, "  \"ptp\": %s,\n", r->ptp ? "true" : "false");
 	fprintf(fp, "  \"oneway\": %s,\n", r->oneway ? "true" : "false");
+	fprintf(fp,
+		"  \"samples_truncated\": %s,\n",
+		r->samples_truncated ? "true" : "false");
 	fprintf(fp, "  \"packets_tx\": %u,\n", r->packets_tx);
 	fprintf(fp, "  \"packets_rx\": %u,\n", r->packets_rx);
 	fprintf(fp, "  \"timeouts\": %u,\n", r->timeouts);
@@ -191,12 +202,13 @@ __attribute__((nonnull(1, 2))) static inline void
 stamp_report_write_csv(FILE *fp, const struct stamp_report *r)
 {
 	char ts[STAMP_REPORT_TS_MAX];
-	stamp_report_iso8601_utc(ts, sizeof(ts));
+	// 生成失敗時は ts[0]='\0' となり空フィールド（CSV の欠損表現）になる
+	(void)stamp_report_iso8601_utc(ts, sizeof(ts));
 	char loss[STAMP_REPORT_NUM_MAX];
 	stamp_report_fmt_double(loss, sizeof(loss), r->loss_ratio, 6);
 
 	fputs("# format_version=1.0\n", fp);
-	fputs("timestamp,target,family,protocol,ptp,oneway,"
+	fputs("timestamp,target,family,protocol,ptp,oneway,samples_truncated,"
 	      "packets_tx,packets_rx,timeouts,loss_ratio",
 	      fp);
 	for (size_t i = 0; i < r->field_count; i++) {
@@ -205,12 +217,13 @@ stamp_report_write_csv(FILE *fp, const struct stamp_report *r)
 	fputc('\n', fp);
 
 	fprintf(fp,
-		"%s,%s,%s,STAMP,%s,%s,%u,%u,%u,%s",
+		"%s,%s,%s,STAMP,%s,%s,%s,%u,%u,%u,%s",
 		ts,
 		r->target != NULL ? r->target : "",
 		r->family != NULL ? r->family : "",
 		r->ptp ? "true" : "false",
 		r->oneway ? "true" : "false",
+		r->samples_truncated ? "true" : "false",
 		r->packets_tx,
 		r->packets_rx,
 		r->timeouts,

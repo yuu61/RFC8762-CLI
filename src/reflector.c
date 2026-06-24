@@ -697,7 +697,7 @@ print_reflector_start_message(uint16_t port, int af_hint, int socket_family)
 				   ? "dual-stack (IPv4+IPv6)"
 				   : "IPv4";
 	} else {
-		mode_str = (socket_family == AF_INET6) ? "IPv6" : "IPv4";
+		mode_str = stamp_family_str(socket_family);
 	}
 	printf("STAMP Reflector listening on port %u (%s)", port, mode_str);
 	if (g_ptp_mode) {

@@ -18,8 +18,14 @@
 #define STAMP_ASYMMETRY_WARN_THRESHOLD_MS 10.0
 
 // サンプル保持バッファの容量（percentile/PDV 用、-n/-w 指定時のみ確保）
-#define STAMP_SAMPLE_INITIAL_CAP 256u
+#define STAMP_SAMPLE_INITIAL_CAP 256U
 #define STAMP_SAMPLE_MAX_CAP	 ((size_t)10 * 1000 * 1000) // 暴走/OOM 防止
+
+// 連続送信失敗の上限。-n は実送信本数で数えるため、宛先到達不能（連続 send 失敗）
+// かつ -w 未指定だと -n の停止条件に到達できず無限ループに陥る。その救済として、
+// この回数だけ連続で send が失敗したら測定を打ち切る（送信間隔 1 秒なので概ね
+// この秒数で諦める）。成功すればカウンタはリセットされ、一過性の失敗では発火しない。
+#define STAMP_MAX_CONSECUTIVE_SEND_FAILURES 10U
 
 #ifdef __linux__
 #define SENDER_IFNAME(opts) ((opts).ifname)
@@ -81,8 +87,54 @@ static bool g_collect_samples = false; // (-n || -w) のとき true
 static bool g_sample_oom_warned = false;
 
 /**
- * サンプルバッファの容量を確保（不足時に realloc で 2 倍成長）。
- * realloc 失敗・上限到達時は警告を 1 回出して以後の蓄積を停止する（計測は継続）。
+ * サンプルバッファを new_cap 要素へ拡張し、既存 count 件をコピーして原子的に
+ * 差し替える。rtt（one-way 時は fwd/bwd も）のいずれかの確保に失敗した場合は
+ * g_samples を一切変更せず（旧バッファ・旧データを保持して）false を返す。
+ * realloc を使わず malloc→memcpy→swap とすることで、片側だけ成長して系列長が
+ * 食い違う（または無駄に確保したまま蓄積停止する）不整合を防ぐ。
+ * @param new_cap 目標容量（g_samples.cap より大きいこと）
+ * @param oneway one-way モード（fwd/bwd も確保するか）
+ * @return 成功時 true
+ */
+static bool stamp_sample_buffer_grow_to(size_t new_cap, bool oneway)
+{
+	double *new_rtt = malloc(new_cap * sizeof(*new_rtt));
+	double *new_fwd = NULL;
+	double *new_bwd = NULL;
+	if (oneway) {
+		new_fwd = malloc(new_cap * sizeof(*new_fwd));
+		new_bwd = malloc(new_cap * sizeof(*new_bwd));
+	}
+	if (new_rtt == NULL || (oneway && (new_fwd == NULL || new_bwd == NULL))) {
+		free(new_rtt);
+		free(new_fwd);
+		free(new_bwd);
+		return false;
+	}
+
+	size_t n = g_samples.count;
+	if (n > 0) {
+		memcpy(new_rtt, g_samples.rtt, n * sizeof(*new_rtt));
+		if (oneway) {
+			memcpy(new_fwd, g_samples.fwd, n * sizeof(*new_fwd));
+			memcpy(new_bwd, g_samples.bwd, n * sizeof(*new_bwd));
+		}
+	}
+	free(g_samples.rtt);
+	g_samples.rtt = new_rtt;
+	if (oneway) {
+		free(g_samples.fwd);
+		g_samples.fwd = new_fwd;
+		free(g_samples.bwd);
+		g_samples.bwd = new_bwd;
+	}
+	g_samples.cap = new_cap;
+	return true;
+}
+
+/**
+ * サンプルバッファの容量を確保（不足時に 2 倍成長）。
+ * 成長失敗・上限到達時は警告を 1 回出して以後の蓄積を停止する（計測は継続）。
  * @param oneway one-way モード（fwd/bwd も確保するか）
  * @return 1 件書き込み可能なら true
  */
@@ -109,40 +161,32 @@ static bool stamp_sample_buffer_reserve(bool oneway)
 		new_cap = STAMP_SAMPLE_MAX_CAP;
 	}
 
-	// realloc は一時変数で受け、失敗時も元のポインタを保持（リーク防止）
-	bool ok = true;
-	double *new_rtt = realloc(g_samples.rtt, new_cap * sizeof(*new_rtt));
-	if (new_rtt != NULL) {
-		g_samples.rtt = new_rtt;
-	} else {
-		ok = false;
-	}
-	if (oneway) {
-		double *new_fwd =
-			realloc(g_samples.fwd, new_cap * sizeof(*new_fwd));
-		if (new_fwd != NULL) {
-			g_samples.fwd = new_fwd;
-		} else {
-			ok = false;
-		}
-		double *new_bwd =
-			realloc(g_samples.bwd, new_cap * sizeof(*new_bwd));
-		if (new_bwd != NULL) {
-			g_samples.bwd = new_bwd;
-		} else {
-			ok = false;
-		}
-	}
-	if (!ok) {
+	if (!stamp_sample_buffer_grow_to(new_cap, oneway)) {
 		fprintf(stderr,
 			"Warning: failed to grow sample buffer; "
 			"percentiles use a truncated sample set\n");
 		g_sample_oom_warned = true;
 		return false;
 	}
-
-	g_samples.cap = new_cap;
 	return true;
+}
+
+/**
+ * 最終サイズが既知（-n 指定）のとき、サンプルバッファを一括確保する。
+ * 毎回の 2 倍成長・コピーを避ける最適化。失敗しても致命とせず、以後の動的成長に
+ * フォールバックする（OOM ラッチも立てない）。
+ * @param want 確保したい要素数（STAMP_SAMPLE_MAX_CAP で頭打ち）
+ * @param oneway one-way モード（fwd/bwd も確保するか）
+ */
+static void stamp_sample_buffer_prereserve(size_t want, bool oneway)
+{
+	if (want > STAMP_SAMPLE_MAX_CAP) {
+		want = STAMP_SAMPLE_MAX_CAP;
+	}
+	if (want <= g_samples.cap) {
+		return; // 既に十分（want==0 を含む）
+	}
+	(void)stamp_sample_buffer_grow_to(want, oneway);
 }
 
 /**
@@ -180,6 +224,35 @@ static void stamp_sample_buffer_free(void)
 	g_samples.cap = 0;
 }
 
+// 系列ごとの分布指標（human / machine 出力で共用）
+struct series_dist {
+	double p50;
+	double p95;
+	double p99;
+	double pdv;
+};
+
+/**
+ * 系列のパーセンタイル・PDV をまとめて算出する（配列を破壊的にソート）。
+ * human / machine 両出力でこの 1 箇所を共用し、指標定義の二重実装を避ける。
+ */
+__attribute__((nonnull(1))) static struct series_dist
+compute_series_dist(double *arr, size_t n)
+{
+	struct series_dist d = {NAN, NAN, NAN, NAN};
+	if (n == 0) {
+		return d;
+	}
+	qsort(arr, n, sizeof(*arr), stamp_double_cmp);
+	d.p50 = stamp_percentile_sorted(arr, n, 50.0);
+	d.p95 = stamp_percentile_sorted(arr, n, 95.0);
+	d.p99 = stamp_percentile_sorted(arr, n, 99.0);
+	// PDV (RFC 5481) = p95 - 最小値。ソート済みで arr[0] が最小なので、
+	// 算出済みの p95 を再利用する（p95 の二重計算を回避）
+	d.pdv = d.p95 - arr[0];
+	return d;
+}
+
 /**
  * 分布サマリ行を表示（配列を破壊的に昇順ソートし、percentile と PDV を出力）
  * @param label 系列名（"RTT" 等）
@@ -191,15 +264,13 @@ static void print_distribution(const char *label, double *arr, size_t n)
 	if (n == 0) {
 		return;
 	}
-	qsort(arr, n, sizeof(*arr), stamp_double_cmp);
+	struct series_dist d = compute_series_dist(arr, n);
 	printf("%s p50/p95/p99 = %.3f/%.3f/%.3f ms\n",
 	       label,
-	       stamp_percentile_sorted(arr, n, 50.0),
-	       stamp_percentile_sorted(arr, n, 95.0),
-	       stamp_percentile_sorted(arr, n, 99.0));
-	printf("%s PDV (p95-min) = %.3f ms\n",
-	       label,
-	       stamp_pdv_from_sorted(arr, n));
+	       d.p50,
+	       d.p95,
+	       d.p99);
+	printf("%s PDV (p95-min) = %.3f ms\n", label, d.pdv);
 }
 
 /**
@@ -259,6 +330,10 @@ __attribute__((cold)) static void print_statistics_human(void)
 			print_ipdv("Backward", &g_stats.ipdv_bwd);
 		}
 		if (g_collect_samples && g_samples.count > 0) {
+			if (g_sample_oom_warned) {
+				printf("Note: percentiles/PDV use a truncated "
+				       "sample set (sample limit reached)\n");
+			}
 			print_distribution("RTT     ",
 					   g_samples.rtt,
 					   g_samples.count);
@@ -273,14 +348,6 @@ __attribute__((cold)) static void print_statistics_human(void)
 		}
 	}
 }
-
-// 系列ごとの分布指標（machine 出力用）
-struct series_dist {
-	double p50;
-	double p95;
-	double p99;
-	double pdv;
-};
 
 // machine 出力用: 未集計(count==0)の Welford 値は NAN（JSON null/CSV 空）にする
 __attribute__((nonnull(1))) static double
@@ -301,25 +368,9 @@ wf_max(const struct stamp_welford *w)
 __attribute__((nonnull(1))) static double
 wf_std(const struct stamp_welford *w)
 {
-	return stamp_welford_count(w) == 0 ? (double)NAN : stamp_welford_stddev(w);
-}
-
-/**
- * 系列のパーセンタイル・PDV をまとめて算出する（配列を破壊的にソート）。
- */
-__attribute__((nonnull(1))) static struct series_dist
-compute_series_dist(double *arr, size_t n)
-{
-	struct series_dist d = {NAN, NAN, NAN, NAN};
-	if (n == 0) {
-		return d;
-	}
-	qsort(arr, n, sizeof(*arr), stamp_double_cmp);
-	d.p50 = stamp_percentile_sorted(arr, n, 50.0);
-	d.p95 = stamp_percentile_sorted(arr, n, 95.0);
-	d.p99 = stamp_percentile_sorted(arr, n, 99.0);
-	d.pdv = stamp_pdv_from_sorted(arr, n);
-	return d;
+	// 標本標準偏差(n-1)はサンプル数<2で未定義。min/avg/max と異なり 0 で
+	// 偽装せず NAN（JSON null / CSV 空）を返し「欠損」を明示する。
+	return stamp_welford_count(w) < 2 ? (double)NAN : stamp_welford_stddev(w);
 }
 
 /**
@@ -384,9 +435,10 @@ print_statistics_machine(const struct sockaddr_storage *servaddr)
 
 	struct stamp_report report = {
 		.target = target,
-		.family = (servaddr->ss_family == AF_INET6) ? "IPv6" : "IPv4",
+		.family = stamp_family_str(servaddr->ss_family),
 		.ptp = g_ptp_mode,
 		.oneway = g_oneway_mode,
+		.samples_truncated = g_sample_oom_warned,
 		.packets_tx = g_stats.sent,
 		.packets_rx = g_stats.received,
 		.timeouts = g_stats.timeouts,
@@ -986,30 +1038,6 @@ struct sender_options {
 };
 
 /**
- * 正の整数オプション引数を uint32_t に解析（1..UINT32_MAX）。
- * 0・範囲外・非数・余分な文字は拒否する。
- * @param arg 数値文字列
- * @param out パース結果
- * @return 成功時 0、エラー時 -1
- */
-__attribute__((nonnull(1, 2), cold)) static int
-parse_positive_u32(const char *arg, uint32_t *out)
-{
-	if (*arg == '\0') {
-		return -1;
-	}
-	char *end = NULL;
-	errno = 0;
-	unsigned long long value = strtoull(arg, &end, 10);
-	if (errno == ERANGE || (end && *end != '\0') || value == 0 ||
-	    value > UINT32_MAX) {
-		return -1;
-	}
-	*out = (uint32_t)value;
-	return 0;
-}
-
-/**
  * 出力形式文字列を enum に解析する。
  * @param arg "human" / "json" / "csv"
  * @param out 解析結果
@@ -1069,13 +1097,16 @@ handle_sender_option(int opt, struct sender_options *opts)
 		opts->oneway_mode = true;
 		return 0;
 	case 'n':
-		if (parse_positive_u32(optarg, &opts->count) != 0) {
+		if (stamp_parse_u32_range(optarg, &opts->count, UINT32_MAX) !=
+		    0) {
 			fprintf(stderr, "Invalid count: %s\n", optarg);
 			return 1;
 		}
 		return 0;
 	case 'w':
-		if (parse_positive_u32(optarg, &opts->duration_sec) != 0) {
+		if (stamp_parse_u32_range(optarg,
+					  &opts->duration_sec,
+					  UINT32_MAX) != 0) {
 			fprintf(stderr, "Invalid duration: %s\n", optarg);
 			return 1;
 		}
@@ -1148,8 +1179,7 @@ __attribute__((cold)) static void print_sender_start_message(
 		return; // 機械可読モードでは人間向けバナーを抑制
 	}
 	char addr_port_str[STAMP_ADDR_PORT_BUFSIZE];
-	const char *family_str = (servaddr->ss_family == AF_INET6) ? "IPv6"
-								   : "IPv4";
+	const char *family_str = stamp_family_str(servaddr->ss_family);
 	stamp_format_sockaddr_with_port(servaddr,
 					addr_port_str,
 					sizeof(addr_port_str));
@@ -1246,6 +1276,82 @@ __attribute__((cold)) static int platform_init_sender(void)
 }
 
 /**
+ * 単調増加クロックのミリ秒値を取得する（-w の経過時間計測用）。
+ * 壁時計（time()）と異なり NTP/手動のクロックステップに影響されない。
+ * @param out_ms 取得したミリ秒値（非 NULL）
+ * @return 成功時 true、取得失敗時 false
+ */
+__attribute__((nonnull(1))) static bool monotonic_now_ms(uint64_t *out_ms)
+{
+#ifdef _WIN32
+	*out_ms = (uint64_t)GetTickCount64();
+	return true;
+#else
+	struct timespec ts;
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+		return false;
+	}
+	*out_ms = (uint64_t)ts.tv_sec * 1000U + (uint64_t)ts.tv_nsec / 1000000U;
+	return true;
+#endif
+}
+
+/**
+ * 受信タイムアウトを設定する（-w の残り時間に合わせて短縮するため毎回呼ぶ）。
+ * 設定失敗は致命としない（既定タイムアウトのまま継続）。SO_RCVTIMEO=0 は
+ * 「無制限」を意味するため、呼び出し側は 0 を渡さないこと。
+ * @param sockfd 対象ソケット
+ * @param sec 秒
+ * @param usec マイクロ秒
+ */
+static void set_recv_timeout(SOCKET sockfd, long sec, long usec)
+{
+#ifdef _WIN32
+	DWORD timeout_ms = (DWORD)(sec * 1000 + usec / 1000);
+	(void)setsockopt(sockfd,
+			 SOL_SOCKET,
+			 SO_RCVTIMEO,
+			 (const char *)&timeout_ms,
+			 sizeof(timeout_ms));
+#else
+	(void)stamp_set_socket_timeouts(sockfd, sec, usec, false);
+#endif
+}
+
+/**
+ * -w 締切の処理。経過時間が上限に達していれば true（ループ脱出）を返す。
+ * 締切までの残りが既定タイムアウト未満なら recv タイムアウトを残り時間へ短縮し、
+ * 応答ロス時に -w を大きく超過するのを防ぐ。単調クロックを用いる。
+ * @param sockfd 送信ソケット
+ * @param duration_ms 計測上限（ミリ秒）
+ * @param start_ms 計測開始時刻（単調クロックのミリ秒値）
+ * @return 締切到達で true
+ */
+static bool sender_deadline_reached(SOCKET sockfd,
+				    uint64_t duration_ms,
+				    uint64_t start_ms)
+{
+	uint64_t now_ms;
+	if (!monotonic_now_ms(&now_ms)) {
+		return false; // 取得失敗時は締切判定をスキップ（次回再試行）
+	}
+	uint64_t elapsed = now_ms - start_ms;
+	if (elapsed >= duration_ms) {
+		return true;
+	}
+	uint64_t remain_ms = duration_ms - elapsed;
+	if (remain_ms < (uint64_t)SOCKET_TIMEOUT_SEC * 1000U) {
+		// -w は ping -w と同様のハード締切。残り時間で recv を打ち切るため、
+		// 締切直前に送った最後の応答が締切後に到着すると 1 本だけ timeout
+		// （= loss）として計上されうる（境界効果・計測長が伸びるほど軽微）。
+		set_recv_timeout(sockfd,
+				 (long)(remain_ms / 1000U),
+				 (long)(remain_ms % 1000U) * 1000L);
+	}
+	return false;
+}
+
+/**
  * 測定ループ本体（送信→受信→統計更新）。
  * -n/-w 指定時は所定の本数・秒数で停止し、g_collect_samples を設定する。
  * @param sockfd 送信ソケット
@@ -1257,21 +1363,33 @@ run_measurement_loop(SOCKET sockfd, const struct sender_options *opts)
 {
 	struct stamp_sender_packet tx_packet;
 	uint32_t seq = 0;
-	uint32_t sent_count = 0; // 送信本数（seq は uint32_t ラップするため別管理）
-	time_t start_time = 0;
+	uint32_t sent_count = 0;	   // 実送信できた本数（seq は uint32_t ラップのため別管理）
+	uint32_t consecutive_failures = 0; // 連続 send 失敗数（成功でリセット）
+	uint64_t start_ms = 0;
+	uint64_t duration_ms = (uint64_t)opts->duration_sec * 1000U;
 
 	// -n/-w 指定時は有限計測し、終了時にパーセンタイルを算出する
 	g_collect_samples = (opts->count != 0 || opts->duration_sec != 0);
 	if (opts->duration_sec != 0) {
-		start_time = time(NULL);
-		if (start_time == (time_t)-1) {
+		if (!monotonic_now_ms(&start_ms)) {
 			fprintf(stderr, "Failed to get start time\n");
 			return -1;
 		}
 	}
+	// -n 指定時は最終サイズが既知なので一括確保（毎回の成長コピーを回避）
+	if (opts->count != 0) {
+		stamp_sample_buffer_prereserve(opts->count, opts->oneway_mode);
+	}
 
 	uint8_t recv_buffer[STAMP_MAX_PACKET_SIZE];
 	while (__atomic_load_n(&g_running, __ATOMIC_SEQ_CST)) {
+		// -w 締切判定（ブロッキング受信の前に判定し、recv タイムアウトを
+		// 残り時間へ詰める）
+		if (opts->duration_sec != 0 &&
+		    sender_deadline_reached(sockfd, duration_ms, start_ms)) {
+			break;
+		}
+
 		uint32_t real_t1_sec = 0;
 		uint32_t real_t1_frac = 0;
 		if (send_stamp_packet(sockfd,
@@ -1285,17 +1403,21 @@ run_measurement_loop(SOCKET sockfd, const struct sender_options *opts)
 						   real_t1_frac,
 						   recv_buffer,
 						   sizeof(recv_buffer));
-		}
-		seq++; // uint32_t ラップは意図的（RFC 8762 準拠）
-		sent_count++;
-		// -n 到達で停止（スリープ前に脱出）
-		if (opts->count != 0 && sent_count >= opts->count) {
+			sent_count++; // 実送信できたパケットのみ -n の対象
+			consecutive_failures = 0;
+		} else if (++consecutive_failures >=
+			   STAMP_MAX_CONSECUTIVE_SEND_FAILURES) {
+			// 宛先到達不能等で送信が連続失敗。-w 未指定でも無限ループに
+			// ならないよう打ち切る（ここまでの結果は出力する）
+			fprintf(stderr,
+				"Aborting: %u consecutive send failures "
+				"(target unreachable?)\n",
+				consecutive_failures);
 			break;
 		}
-		// -w 到達で停止（秒粒度。スリープ中の脱出は最大 1 間隔遅延しうる）
-		if (opts->duration_sec != 0 &&
-		    difftime(time(NULL), start_time) >=
-			    (double)opts->duration_sec) {
+		seq++; // uint32_t ラップは意図的（RFC 8762 準拠）
+		// -n 到達で停止（スリープ前に脱出）
+		if (opts->count != 0 && sent_count >= opts->count) {
 			break;
 		}
 		sleep_with_interrupt_check();
