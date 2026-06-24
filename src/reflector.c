@@ -8,6 +8,9 @@
 #include <mswsock.h>
 #endif
 
+// reflector 受信タイムアウト（stamp_protocol.h から移設、reflector 専用の運用定数）
+#define STAMP_REFLECTOR_TIMEOUT_MS 1000
+
 // セッション統計情報
 struct reflector_stats {
 	uint32_t packets_reflected;
@@ -25,6 +28,8 @@ static struct reflector_stats g_stats = {0, 0};
 static uint16_t
 	g_error_estimate_nbo; // htons済み Error Estimate（main()で設定）
 static bool g_warned_ttl_unavailable = false;
+// タイムスタンプ形式フラグ（true: PTP/Z=1, false: NTP）。main() が CLI から設定
+static bool g_ptp_mode = false;
 
 #ifndef _WIN32
 // ランタイムデバッグフラグ
@@ -34,7 +39,7 @@ static bool g_debug_mode = false;
 // ハードウェアタイムスタンプ用インターフェース名
 static const char *g_ifname = NULL;
 static bool g_phc_enabled = false;
-static int g_phc_fd = -1;
+// PHC fd は main() の AUTO_CLOSE_FD ローカルで管理（プロセス終了時に自動 close）
 static clockid_t g_phc_clockid = CLOCK_REALTIME;
 #endif
 
@@ -597,20 +602,15 @@ __attribute__((hot)) static void handle_one_packet(
 					  len,
 					  &ttl,
 					  &t2_sec,
-					  &t2_frac);
+					  &t2_frac,
+					  g_ptp_mode);
 	if (n < 0) {
 		if (!__atomic_load_n(&g_running, __ATOMIC_SEQ_CST)) {
 			return;
 		}
-#ifdef _WIN32
-		if (WSAGetLastError() == WSAETIMEDOUT) {
+		if (stamp_recv_timed_out()) {
 			return;
 		}
-#else
-		if (IS_WOULDBLOCK(errno)) {
-			return;
-		}
-#endif
 		PRINT_SOCKET_ERROR("recvfrom failed");
 		return;
 	}
@@ -661,17 +661,15 @@ __attribute__((hot)) static void handle_one_packet(
 	}
 
 	/* Step 3: 規定サイズ未満のパケットをゼロパディング */
-	int send_len = n;
-	if (send_len < STAMP_BASE_PACKET_SIZE) {
+	int send_len;
+	bool was_padded;
+	stamp_pad_to_base_size(buffer, n, &send_len, &was_padded);
+	if (was_padded) {
 		fprintf(stderr,
 			"Warning: undersized STAMP packet received (%d "
 			"bytes); will pad to %d bytes.\n",
 			n,
 			STAMP_BASE_PACKET_SIZE);
-		memset(buffer + send_len,
-		       0,
-		       (size_t)(STAMP_BASE_PACKET_SIZE - send_len));
-		send_len = STAMP_BASE_PACKET_SIZE;
 	}
 
 	/* Step 4: 応答パケットを構築して送信元へ返送 */
@@ -715,6 +713,22 @@ print_reflector_start_message(uint16_t port, int af_hint, int socket_family)
 }
 
 /**
+ * reflector のプラットフォーム初期化（WSAStartup）。sender と対称な起動前設定。
+ * @return 成功時0、エラー時-1
+ */
+__attribute__((cold)) static int platform_init_reflector(void)
+{
+#ifdef _WIN32
+	WSADATA wsa_data;
+	if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0) {
+		fprintf(stderr, "WSAStartup failed\n");
+		return -1;
+	}
+#endif
+	return 0;
+}
+
+/**
  * reflector
  * のプラットフォーム固有の起動後設定（WSARecvMsg/シグナル/ファイアウォール）
  */
@@ -743,19 +757,18 @@ platform_post_init_reflector(SOCKET sockfd, uint16_t port, int socket_family)
 int main(int argc, char *argv[])
 {
 	AUTO_CLOSE_SOCKET SOCKET sockfd = INVALID_SOCKET;
+#ifdef __linux__
+	AUTO_CLOSE_FD int phc_fd = -1;
+#endif
 	struct sockaddr_storage cliaddr;
 	uint8_t buffer[STAMP_MAX_PACKET_SIZE];
 	socklen_t len;
 	int socket_family = AF_INET;
 	int exit_code = 0;
 
-#ifdef _WIN32
-	WSADATA wsa_data;
-	if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0) {
-		fprintf(stderr, "WSAStartup failed\n");
+	if (platform_init_reflector() != 0) {
 		return 1;
 	}
-#endif
 
 	struct reflector_options opts;
 	if (parse_reflector_options(argc, argv, &opts) != 0) {
@@ -764,8 +777,7 @@ int main(int argc, char *argv[])
 	}
 
 	g_ptp_mode = opts.ptp_mode;
-	g_error_estimate_nbo = htons(g_ptp_mode ? ERROR_ESTIMATE_PTP_DEFAULT
-						: ERROR_ESTIMATE_DEFAULT);
+	g_error_estimate_nbo = stamp_default_error_estimate_nbo(g_ptp_mode);
 #ifndef _WIN32
 	g_debug_mode = opts.debug_mode;
 	if (opts.port < 1024 && geteuid() != 0) {
@@ -785,18 +797,14 @@ int main(int argc, char *argv[])
 		goto cleanup;
 	}
 #ifdef __linux__
-	if (opts.phc_requested) {
-		if (g_ifname == NULL) {
-			fprintf(stderr, "Error: -c requires -i <interface>\n");
-			exit_code = 1;
-			goto cleanup;
-		}
-		if (stamp_init_phc(sockfd,
-				   g_ifname,
-				   &g_phc_fd,
-				   &g_phc_clockid) == 0) {
-			g_phc_enabled = true;
-		}
+	if (!stamp_setup_phc_from_options(sockfd,
+					  opts.phc_requested,
+					  g_ifname,
+					  &phc_fd,
+					  &g_phc_clockid,
+					  &g_phc_enabled)) {
+		exit_code = 1;
+		goto cleanup;
 	}
 #endif
 	platform_post_init_reflector(sockfd, opts.port, socket_family);
@@ -814,12 +822,7 @@ int main(int argc, char *argv[])
 	print_statistics();
 
 cleanup:
-#ifdef __linux__
-	if (g_phc_fd >= 0) {
-		close(g_phc_fd);
-		g_phc_fd = -1;
-	}
-#endif
+	// PHC fd は AUTO_CLOSE_FD により main() スコープ離脱時に自動 close される
 #ifdef _WIN32
 	// WSACleanup 前にソケットを閉じ AUTO_CLOSE_SOCKET の二重解放を防止
 	if (!SOCKET_ERROR_CHECK(sockfd)) {

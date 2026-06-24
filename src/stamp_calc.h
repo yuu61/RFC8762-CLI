@@ -6,6 +6,48 @@
 #include "stamp_protocol.h"
 
 /**
+ * モードに応じた既定 Error Estimate を htons 済み（ネットワークバイトオーダー）で返す
+ *
+ * Sender/Reflector の両 main() が同一ロジックで既定値を選択していたのを集約する。
+ *
+ * @param ptp_mode true=PTP(Z=1), false=NTP
+ * @return htons 済み Error Estimate
+ */
+static inline uint16_t stamp_default_error_estimate_nbo(bool ptp_mode)
+{
+	return htons((uint16_t)(ptp_mode ? ERROR_ESTIMATE_PTP_DEFAULT
+					 : ERROR_ESTIMATE_DEFAULT));
+}
+
+/**
+ * 規定サイズ未満のパケットをゼロパディングし、送信長を算出（純粋計算、I/Oなし）
+ *
+ * STAMP_BASE_PACKET_SIZE 未満の場合のみバッファ末尾を 0 埋めし、送信長を
+ * 基本サイズへ補正する。警告出力は I/O 担当の呼び出し元に委ねる。
+ *
+ * @param buffer         パケットバッファ（パディング時に末尾を 0 埋め）
+ * @param recv_len       受信バイト数
+ * @param out_send_len   送信に用いるパケット長を格納
+ * @param out_was_padded パディングを行った場合 true を格納
+ */
+static inline void stamp_pad_to_base_size(uint8_t *buffer,
+					  int recv_len,
+					  int *out_send_len,
+					  bool *out_was_padded)
+{
+	if (recv_len < STAMP_BASE_PACKET_SIZE) {
+		memset(buffer + recv_len,
+		       0,
+		       (size_t)(STAMP_BASE_PACKET_SIZE - recv_len));
+		*out_send_len = STAMP_BASE_PACKET_SIZE;
+		*out_was_padded = true;
+	} else {
+		*out_send_len = recv_len;
+		*out_was_padded = false;
+	}
+}
+
+/**
  * Reflectorパケットを構築（純粋なデータ変換、I/Oなし）
  *
  * Session-Senderパケットの情報をReflectorパケットにコピーし、

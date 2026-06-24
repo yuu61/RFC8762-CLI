@@ -1,33 +1,13 @@
-// RFC 8762 STAMP - シグナル処理 + アドレスユーティリティ
+// RFC 8762 STAMP - アドレスユーティリティ（解決・整形・ポートパース）
 
 #ifndef STAMP_NET_H
 #define STAMP_NET_H
 
 #include "stamp_protocol.h"
 
-// グローバル変数（シグナルハンドラからアクセス、stamp_globals.c で定義）
-extern volatile sig_atomic_t g_running;
-
-/**
- * シグナルハンドラ（Ctrl+C対応）
- */
-#ifdef _WIN32
-static inline BOOL WINAPI stamp_signal_handler(DWORD signal)
-{
-	if (signal == CTRL_C_EVENT) {
-		__atomic_store_n(&g_running, 0, __ATOMIC_SEQ_CST);
-		return TRUE;
-	}
-	return FALSE;
-}
-#else
-static inline void stamp_signal_handler(int signal)
-{
-	if (signal == SIGINT || signal == SIGTERM || signal == SIGABRT) {
-		__atomic_store_n(&g_running, 0, __ATOMIC_SEQ_CST);
-	}
-}
-#endif
+// アドレス:ポート表示用バッファ長（stamp_protocol.h から移設）
+// IPv6 アドレス最大長 + "[]:port" 装飾分の余白
+#define STAMP_ADDR_PORT_BUFSIZE (INET6_ADDRSTRLEN + 16)
 
 /**
  * ポート番号のパース
@@ -160,7 +140,7 @@ static inline const char *stamp_sockaddr_to_string_safe(
 
 /**
  * アドレス:ポート形式の文字列を生成（IPv6は[addr]:port形式）
- * buflenはSOCKADDR_PORT_STR_MAX以上を推奨
+ * buflenはSTAMP_ADDR_PORT_BUFSIZE以上を推奨
  */
 // snprintf の切り詰めは設計上の意図的動作
 #pragma GCC diagnostic push

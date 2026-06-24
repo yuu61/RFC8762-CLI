@@ -21,6 +21,32 @@
 #endif
 
 #ifdef _WIN32
+// MinGW/MSYS2 で未定義の可能性がある SIO_TIMESTAMPING 関連定義
+// （stamp_protocol.h から移設。カーネルTS 制御プレーンの plumbing）
+#include <mstcpip.h>
+
+#ifndef SIO_TIMESTAMPING
+#define SIO_TIMESTAMPING _WSAIOW(IOC_VENDOR, 235)
+#endif
+
+#ifndef SO_TIMESTAMP
+#define SO_TIMESTAMP 0x300A
+#endif
+
+#ifndef TIMESTAMPING_FLAG_RX
+#define TIMESTAMPING_FLAG_RX 0x1
+#define TIMESTAMPING_FLAG_TX 0x2
+
+// NOLINTBEGIN(readability-identifier-naming) -- Windows SDK互換typedef
+typedef struct _TIMESTAMPING_CONFIG {
+	ULONG Flags;
+	USHORT TxTimestampsBuffered;
+} TIMESTAMPING_CONFIG, *PTIMESTAMPING_CONFIG;
+// NOLINTEND(readability-identifier-naming)
+
+#define SO_TIMESTAMP_ID 0x300B
+#endif
+
 // WSARecvMsg 関数ポインタ（実体は stamp_globals.c、各実行ファイルが初期化）
 extern LPFN_WSARECVMSG g_wsa_recvmsg;
 
@@ -85,37 +111,6 @@ static inline bool stamp_enable_kernel_timestamping_windows(SOCKET sockfd)
 		"using userspace timestamps\n",
 		WSAGetLastError());
 	return false;
-}
-
-/**
- * FILETIME値をSTAMPタイムスタンプ（NTP/PTP形式）に変換
- * @param filetime Windows FILETIME値（1601-01-01からの100ナノ秒単位）
- * @param out_sec 秒部分を格納するポインタ（ネットワークバイトオーダー）
- * @param out_frac 小数部分を格納するポインタ（ネットワークバイトオーダー）
- * @param ptp_mode true=PTP形式, false=NTP形式
- * @return 変換成功時true、FILETIME値が不正な場合false
- */
-static inline bool convert_filetime_to_stamp(UINT64 filetime,
-					     uint32_t *out_sec,
-					     uint32_t *out_frac,
-					     bool ptp_mode)
-{
-	if (filetime < WINDOWS_FILETIME_Y2K_THRESHOLD) {
-		return false;
-	}
-
-	uint64_t unix_time = (filetime / WINDOWS_TICKS_PER_SEC) -
-			     WINDOWS_TO_NTP_OFFSET;
-	uint64_t frac_100ns = filetime % WINDOWS_TICKS_PER_SEC;
-
-	*out_sec = htonl((uint32_t)(unix_time + NTP_OFFSET));
-	if (ptp_mode) {
-		uint32_t ns = (uint32_t)(frac_100ns * 100ULL);
-		*out_frac = htonl(ns <= PTP_NSEC_MAX ? ns : PTP_NSEC_MAX);
-	} else {
-		*out_frac = htonl(WINDOWS_100NS_TO_NTP_FRAC(frac_100ns));
-	}
-	return true;
 }
 
 /**
@@ -686,6 +681,48 @@ static inline int stamp_init_phc(int sockfd,
 	fprintf(stderr, "PHC clock enabled: /dev/ptp%d\n", caps.phc_index);
 	return 0;
 }
+
+/**
+ * CLI オプションから PHC をセットアップする共通ヘルパー（Sender/Reflector 共通）
+ *
+ * 両 main() の PHC 初期化ブロック（-i 必須チェック・stamp_init_phc 呼び出し・
+ * 有効化フラグ設定）の重複を集約する。
+ *
+ * @param sockfd        ソケットディスクリプタ
+ * @param phc_requested -c が指定されたか
+ * @param ifname        -i で指定されたインターフェース名（NULL 可）
+ * @param out_fd        PHC ファイルディスクリプタを格納（成功時のみ更新）
+ * @param out_clockid   PHC clockid を格納（成功時のみ更新）
+ * @param out_enabled   PHC が有効化されたら true を格納
+ * @return true=続行可（PHC 有効・無効を問わず）、false=致命的エラー（-c に -i 未指定）
+ */
+static inline bool stamp_setup_phc_from_options(int sockfd,
+						bool phc_requested,
+						const char *ifname,
+						int *out_fd,
+						clockid_t *out_clockid,
+						bool *out_enabled)
+{
+	if (!phc_requested) {
+		return true;
+	}
+	if (ifname == NULL) {
+		fprintf(stderr, "Error: -c requires -i <interface>\n");
+		return false;
+	}
+	if (stamp_init_phc(sockfd, ifname, out_fd, out_clockid) == 0) {
+		*out_enabled = true;
+	}
+	return true;
+}
+
+// Linux: SO_BUSY_POLLの設定値（マイクロ秒）（stamp_protocol.h から移設）
+// デフォルトでは0（無効）とし、高負荷となるビジーポーリングは
+// 高度なチューニングオプションとして明示的に有効化することを推奨。
+// 必要に応じて、コンパイル時に -DSTAMP_BUSY_POLL_USEC=50 などで上書き可能。
+#ifndef STAMP_BUSY_POLL_USEC
+#define STAMP_BUSY_POLL_USEC 0
+#endif
 
 /**
  * SO_BUSY_POLL（ビジーポーリングでレイテンシ削減）を設定

@@ -3,14 +3,29 @@
 // カーネル/HW タイムスタンプ抽出・受信 TTL/Hop Limit 抽出・プラットフォーム別
 // 受信パス（Linux recvmsg / Windows WSARecvMsg / recvfrom フォールバック）を
 // 1 か所に統一し、双方が stamp_recv_with_timestamp() を呼び出す。
-// タイムスタンプ形式はグローバル g_ptp_mode（stamp_time.h で extern 宣言）を参照する。
+// タイムスタンプ形式（NTP/PTP）は呼び出し元から ptp_mode 引数で受け取る。
 
 #ifndef STAMP_RECV_H
 #define STAMP_RECV_H
 
 #include "stamp_kernel_ts.h" // stamp_extract_kernel_timestamp_*
 #include "stamp_protocol.h"  // STAMP_CMSG_BUFSIZE, IP_TTL_MAX
-#include "stamp_time.h"	     // stamp_get_timestamp, g_ptp_mode
+#include "stamp_time.h"	     // stamp_get_timestamp
+
+/**
+ * 直近のソケットエラーが受信タイムアウト（WSAETIMEDOUT / EAGAIN・EWOULDBLOCK）か判定。
+ *
+ * プラットフォーム別のエラーコード分岐を plumbing 層へ集約する。タイムアウト後の
+ * ポリシー（統計加算・ログ・無音 return）は呼び出し元に委ねる。
+ */
+static inline bool stamp_recv_timed_out(void)
+{
+#ifdef _WIN32
+	return SOCKET_ERRNO == WSAETIMEDOUT;
+#else
+	return IS_WOULDBLOCK(SOCKET_ERRNO);
+#endif
+}
 
 #ifdef _WIN32
 /**
@@ -57,7 +72,11 @@ static inline void stamp_extract_ttl_from_wsamsg(WSAMSG *msg, uint8_t *ttl)
  * Windows: WSARecvMsg によるタイムスタンプ付き受信
  * @param ttl     NULL なら TTL 抽出をスキップ
  * @param ts_sec/ts_frac NULL ならカーネルタイムスタンプ抽出をスキップ
+ * @param ptp_mode true=PTP形式, false=NTP形式
  */
+// 受信 plumbing は I/O 出力（addr/len/ttl/ts）と形式フラグを集約するため引数が多い。
+// ptp_mode はグローバル g_ptp_mode 廃止（関心の分離）に伴い引数化したもの。
+// NOLINTBEGIN(readability-function-size)
 __attribute__((hot)) static inline int
 stamp_recv_with_timestamp_wsa(SOCKET sockfd,
 			      uint8_t *buffer,
@@ -66,7 +85,8 @@ stamp_recv_with_timestamp_wsa(SOCKET sockfd,
 			      socklen_t *len,
 			      uint8_t *ttl,
 			      uint32_t *ts_sec,
-			      uint32_t *ts_frac)
+			      uint32_t *ts_frac,
+			      bool ptp_mode)
 {
 	WSABUF data_buf;
 	WSAMSG msg;
@@ -93,10 +113,10 @@ stamp_recv_with_timestamp_wsa(SOCKET sockfd,
 		if (!stamp_extract_kernel_timestamp_windows(&msg,
 							    ts_sec,
 							    ts_frac,
-							    g_ptp_mode)) {
+							    ptp_mode)) {
 			if (unlikely(stamp_get_timestamp(ts_sec,
 							 ts_frac,
-							 g_ptp_mode) != 0)) {
+							 ptp_mode) != 0)) {
 				fprintf(stderr,
 					"Warning: Failed to get fallback "
 					"receive timestamp\n");
@@ -111,12 +131,14 @@ stamp_recv_with_timestamp_wsa(SOCKET sockfd,
 
 	return (int)bytes;
 }
+// NOLINTEND(readability-function-size)
 
 /**
  * Windows: recvfrom フォールバック受信（WSARecvMsg 未使用時）
  * recvfrom では制御メッセージを得られないため TTL は抽出できず、
  * 呼び出し元（ディスパッチャ）が事前に 0 初期化した値がそのまま残る。
  * したがって ttl は引数に取らない。
+ * @param ptp_mode true=PTP形式, false=NTP形式
  */
 __attribute__((hot)) static inline int
 stamp_recv_with_timestamp_fallback(SOCKET sockfd,
@@ -125,7 +147,8 @@ stamp_recv_with_timestamp_fallback(SOCKET sockfd,
 				   struct sockaddr_storage *addr,
 				   socklen_t *len,
 				   uint32_t *ts_sec,
-				   uint32_t *ts_frac)
+				   uint32_t *ts_frac,
+				   bool ptp_mode)
 {
 	int n = recvfrom(sockfd,
 			 (char *)buffer,
@@ -134,7 +157,7 @@ stamp_recv_with_timestamp_fallback(SOCKET sockfd,
 			 (struct sockaddr *)addr,
 			 len);
 	if (n > 0 && ts_sec && ts_frac) {
-		if (unlikely(stamp_get_timestamp(ts_sec, ts_frac, g_ptp_mode) !=
+		if (unlikely(stamp_get_timestamp(ts_sec, ts_frac, ptp_mode) !=
 			     0)) {
 			fprintf(stderr,
 				"Warning: Failed to get fallback receive "
@@ -181,7 +204,9 @@ stamp_extract_ttl_from_cmsg(struct msghdr *msg, uint8_t *ttl)
  * Unix: recvmsg によるタイムスタンプ付き受信
  * @param ttl     NULL なら TTL 抽出をスキップ
  * @param ts_sec/ts_frac NULL ならカーネルタイムスタンプ抽出をスキップ
+ * @param ptp_mode true=PTP形式, false=NTP形式
  */
+// NOLINTBEGIN(readability-function-size) -- plumbing 集約関数（理由は wsa 版参照）
 __attribute__((hot)) static inline int
 stamp_recv_with_timestamp_unix(SOCKET sockfd,
 			       uint8_t *buffer,
@@ -190,7 +215,8 @@ stamp_recv_with_timestamp_unix(SOCKET sockfd,
 			       socklen_t *len,
 			       uint8_t *ttl,
 			       uint32_t *ts_sec,
-			       uint32_t *ts_frac)
+			       uint32_t *ts_frac,
+			       bool ptp_mode)
 {
 	struct msghdr msg;
 	struct iovec iov;
@@ -217,10 +243,10 @@ stamp_recv_with_timestamp_unix(SOCKET sockfd,
 		if (!stamp_extract_kernel_timestamp_linux(&msg,
 							  ts_sec,
 							  ts_frac,
-							  g_ptp_mode)) {
+							  ptp_mode)) {
 			if (unlikely(stamp_get_timestamp(ts_sec,
 							 ts_frac,
-							 g_ptp_mode) != 0)) {
+							 ptp_mode) != 0)) {
 				fprintf(stderr,
 					"Warning: Failed to get fallback "
 					"receive timestamp\n");
@@ -235,6 +261,7 @@ stamp_recv_with_timestamp_unix(SOCKET sockfd,
 
 	return (int)n;
 }
+// NOLINTEND(readability-function-size)
 #endif
 
 /**
@@ -242,8 +269,10 @@ stamp_recv_with_timestamp_unix(SOCKET sockfd,
  *
  * @param ttl     受信 TTL/Hop Limit の格納先。NULL なら抽出しない（Sender 用）。
  * @param ts_sec/ts_frac 受信タイムスタンプの格納先（NTP/PTP 形式）。
+ * @param ptp_mode true=PTP形式, false=NTP形式
  * @return 受信バイト数、エラー時 -1
  */
+// NOLINTBEGIN(readability-function-size) -- plumbing 集約関数（理由は wsa 版参照）
 __attribute__((hot)) static inline int
 stamp_recv_with_timestamp(SOCKET sockfd,
 			  uint8_t *buffer,
@@ -252,7 +281,8 @@ stamp_recv_with_timestamp(SOCKET sockfd,
 			  socklen_t *len,
 			  uint8_t *ttl,
 			  uint32_t *ts_sec,
-			  uint32_t *ts_frac)
+			  uint32_t *ts_frac,
+			  bool ptp_mode)
 {
 	// TTL 抽出ヘルパーは有効な cmsg を見つけたときのみ上書きするため、
 	// 受信前にここで一度だけ既定値 0 に初期化する（全プラットフォーム共通）。
@@ -268,7 +298,8 @@ stamp_recv_with_timestamp(SOCKET sockfd,
 							  addr,
 							  len,
 							  ts_sec,
-							  ts_frac);
+							  ts_frac,
+							  ptp_mode);
 	}
 	return stamp_recv_with_timestamp_wsa(sockfd,
 					     buffer,
@@ -277,7 +308,8 @@ stamp_recv_with_timestamp(SOCKET sockfd,
 					     len,
 					     ttl,
 					     ts_sec,
-					     ts_frac);
+					     ts_frac,
+					     ptp_mode);
 #else
 	return stamp_recv_with_timestamp_unix(sockfd,
 					      buffer,
@@ -286,8 +318,10 @@ stamp_recv_with_timestamp(SOCKET sockfd,
 					      len,
 					      ttl,
 					      ts_sec,
-					      ts_frac);
+					      ts_frac,
+					      ptp_mode);
 #endif
 }
+// NOLINTEND(readability-function-size)
 
 #endif // STAMP_RECV_H

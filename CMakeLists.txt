@@ -261,6 +261,7 @@ set(HEADERS
     src/stamp_kernel_ts.h
     src/stamp_net.h
     src/stamp_recv.h
+    src/stamp_signal.h
     src/stamp_firewall.h
     src/stamp_validation.h
 )

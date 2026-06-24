@@ -10,6 +10,14 @@
 #define SERVER_IP	  "127.0.0.1" // デフォルトのサーバーIPアドレス（ローカルホスト）
 #define SEND_INTERVAL_SEC 1	      // 送信間隔（秒）
 
+// ソケットタイムアウト（stamp_protocol.h から移設、sender 専用の運用定数）
+#define SOCKET_TIMEOUT_SEC  5
+#define SOCKET_TIMEOUT_USEC 0
+
+// 統計・表示用定数（stamp_protocol.h から移設、sender 専用の運用定数）
+#define STAMP_STATS_INITIAL_MIN		  1e9
+#define STAMP_ASYMMETRY_WARN_THRESHOLD_MS 10.0
+
 #ifdef __linux__
 #define SENDER_IFNAME(opts) ((opts).ifname)
 #else
@@ -18,13 +26,15 @@
 
 static bool g_negative_delay_seen = false;
 static bool g_oneway_mode = false;
+// タイムスタンプ形式フラグ（true: PTP/Z=1, false: NTP）。main() が CLI から設定
+static bool g_ptp_mode = false;
 static uint16_t
 	g_error_estimate_nbo; // htons済み Error Estimate（main()で設定）
 
 #ifdef __linux__
 static bool g_tx_hw_timestamp_enabled = false;
 static bool g_phc_enabled = false;
-static int g_phc_fd = -1;
+// PHC fd は main() の AUTO_CLOSE_FD ローカルで管理（プロセス終了時に自動 close）
 static clockid_t g_phc_clockid = CLOCK_REALTIME;
 #endif
 
@@ -589,14 +599,10 @@ static int receive_and_process_packet(
 					  &len,
 					  NULL,
 					  &t4_sec,
-					  &t4_frac);
+					  &t4_frac,
+					  g_ptp_mode);
 	if (unlikely(n < 0)) {
-#ifdef _WIN32
-		if (SOCKET_ERRNO == WSAETIMEDOUT)
-#else
-		if (IS_WOULDBLOCK(SOCKET_ERRNO))
-#endif
-		{
+		if (stamp_recv_timed_out()) {
 			fprintf(stderr, "Timeout waiting for response\n");
 			g_stats.timeouts++;
 		} else {
@@ -827,6 +833,9 @@ __attribute__((cold)) static int platform_init_sender(void)
 int main(int argc, char *argv[])
 {
 	AUTO_CLOSE_SOCKET SOCKET sockfd = INVALID_SOCKET;
+#ifdef __linux__
+	AUTO_CLOSE_FD int phc_fd = -1;
+#endif
 	struct sockaddr_storage servaddr;
 	socklen_t servaddr_len;
 	struct stamp_sender_packet tx_packet;
@@ -845,8 +854,7 @@ int main(int argc, char *argv[])
 
 	g_ptp_mode = opts.ptp_mode;
 	g_oneway_mode = opts.oneway_mode;
-	g_error_estimate_nbo = htons(g_ptp_mode ? ERROR_ESTIMATE_PTP_DEFAULT
-						: ERROR_ESTIMATE_DEFAULT);
+	g_error_estimate_nbo = stamp_default_error_estimate_nbo(g_ptp_mode);
 
 	sockfd = init_socket(opts.host,
 			     opts.port,
@@ -859,18 +867,14 @@ int main(int argc, char *argv[])
 		goto cleanup;
 	}
 #ifdef __linux__
-	if (opts.phc_requested) {
-		if (opts.ifname == NULL) {
-			fprintf(stderr, "Error: -c requires -i <interface>\n");
-			exit_code = 1;
-			goto cleanup;
-		}
-		if (stamp_init_phc(sockfd,
-				   opts.ifname,
-				   &g_phc_fd,
-				   &g_phc_clockid) == 0) {
-			g_phc_enabled = true;
-		}
+	if (!stamp_setup_phc_from_options(sockfd,
+					  opts.phc_requested,
+					  opts.ifname,
+					  &phc_fd,
+					  &g_phc_clockid,
+					  &g_phc_enabled)) {
+		exit_code = 1;
+		goto cleanup;
 	}
 #endif
 	print_sender_start_message(&servaddr);
@@ -898,12 +902,7 @@ int main(int argc, char *argv[])
 	print_statistics();
 
 cleanup:
-#ifdef __linux__
-	if (g_phc_fd >= 0) {
-		close(g_phc_fd);
-		g_phc_fd = -1;
-	}
-#endif
+	// PHC fd は AUTO_CLOSE_FD により main() スコープ離脱時に自動 close される
 #ifdef _WIN32
 	// WSACleanup 前にソケットを閉じ AUTO_CLOSE_SOCKET の二重解放を防止
 	if (!SOCKET_ERROR_CHECK(sockfd)) {

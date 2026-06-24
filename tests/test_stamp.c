@@ -1644,6 +1644,65 @@ static void test_stamp_check_reflector_input(void)
 		      "reflector input check prioritizes invalid payload");
 }
 
+// stamp_default_error_estimate_nbo: モード→既定 Error Estimate(NBO) 選択
+static void test_stamp_default_error_estimate_nbo(void)
+{
+	EXPECT_EQ_ULL(stamp_default_error_estimate_nbo(false),
+		      htons(ERROR_ESTIMATE_DEFAULT),
+		      "default error estimate NBO (NTP)");
+	EXPECT_EQ_ULL(stamp_default_error_estimate_nbo(true),
+		      htons(ERROR_ESTIMATE_PTP_DEFAULT),
+		      "default error estimate NBO (PTP)");
+}
+
+// stamp_pad_to_base_size: アンダーサイズのゼロパディングと送信長算出
+static void test_stamp_pad_to_base_size(void)
+{
+	uint8_t buffer[STAMP_BASE_PACKET_SIZE];
+	int send_len = -1;
+	bool was_padded = false;
+
+	// アンダーサイズ: 末尾を 0xFF で埋め、パディングで 0 になることを検証
+	memset(buffer, 0xFF, sizeof(buffer));
+	const int recv_len = 20; // < STAMP_BASE_PACKET_SIZE (44)
+	stamp_pad_to_base_size(buffer, recv_len, &send_len, &was_padded);
+	EXPECT_TRUE(was_padded, "undersized packet is padded");
+	EXPECT_EQ_ULL(send_len,
+		      STAMP_BASE_PACKET_SIZE,
+		      "padded send_len == base size");
+	bool all_zero = true;
+	for (int i = recv_len; i < STAMP_BASE_PACKET_SIZE; i++) {
+		if (buffer[i] != 0) {
+			all_zero = false;
+		}
+	}
+	EXPECT_TRUE(all_zero, "padding bytes are zeroed");
+
+	// 基本サイズちょうど: パディングなし
+	send_len = -1;
+	was_padded = true;
+	stamp_pad_to_base_size(buffer,
+			       STAMP_BASE_PACKET_SIZE,
+			       &send_len,
+			       &was_padded);
+	EXPECT_TRUE(!was_padded, "base-size packet not padded");
+	EXPECT_EQ_ULL(send_len,
+		      STAMP_BASE_PACKET_SIZE,
+		      "non-padded send_len == recv_len");
+
+	// 基本サイズ超: パディングなし、送信長は受信長のまま
+	send_len = -1;
+	was_padded = true;
+	stamp_pad_to_base_size(buffer,
+			       STAMP_BASE_PACKET_SIZE + 10,
+			       &send_len,
+			       &was_padded);
+	EXPECT_TRUE(!was_padded, "oversized packet not padded");
+	EXPECT_EQ_ULL(send_len,
+		      STAMP_BASE_PACKET_SIZE + 10,
+		      "oversized send_len == recv_len");
+}
+
 // =============================================================================
 // Phase 6: RTT計算ロジックテスト
 // =============================================================================
@@ -4459,6 +4518,8 @@ int main(void)
 	test_stamp_validate_packet_boundary_sizes();
 	test_stamp_validate_test_payload_for_reflector();
 	test_stamp_check_reflector_input();
+	test_stamp_default_error_estimate_nbo();
+	test_stamp_pad_to_base_size();
 
 	// Phase 6: RTT計算
 	test_rtt_calculation();

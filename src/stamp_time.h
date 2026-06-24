@@ -5,8 +5,30 @@
 
 #include "stamp_protocol.h"
 
-// タイムスタンプ形式フラグ（stamp_globals.c で定義、各 main() が CLI から設定）
-extern bool g_ptp_mode;
+// NTP小数部変換マクロ (丸め付き)（stamp_protocol.h から移設）
+// ナノ秒からNTP小数部への変換: nsec * 2^32 / 10^9
+#define NSEC_TO_NTP_FRAC(nsec)                                               \
+	((uint32_t)(((uint64_t)(nsec) * NTP_FRAC_SCALE_INT + 500000000ULL) / \
+		    NSEC_PER_SEC))
+
+// マイクロ秒からNTP小数部への変換: usec * 2^32 / 10^6
+#define USEC_TO_NTP_FRAC(usec)                                            \
+	((uint32_t)(((uint64_t)(usec) * NTP_FRAC_SCALE_INT + 500000ULL) / \
+		    USEC_PER_SEC))
+
+#ifdef _WIN32
+// Windows epoch から NTP epoch への変換定数（stamp_protocol.h から移設）
+#define WINDOWS_TO_NTP_OFFSET 11644473600ULL
+#define WINDOWS_TICKS_PER_SEC 10000000ULL
+// FILETIME妥当性チェック用閾値: 2000-01-01 00:00:00 UTC
+#define WINDOWS_FILETIME_Y2K_THRESHOLD 125911584000000000ULL
+
+// Windows 100ナノ秒単位からNTP小数部への変換
+#define WINDOWS_100NS_TO_NTP_FRAC(ticks)            \
+	((uint32_t)((((uint64_t)(ticks) << 32) +    \
+		     (WINDOWS_TICKS_PER_SEC / 2)) / \
+		    WINDOWS_TICKS_PER_SEC))
+#endif
 
 /**
  * NTPタイムスタンプを取得 (RFC 5905)
@@ -193,6 +215,39 @@ stamp_get_timestamp(uint32_t *sec, uint32_t *frac, bool ptp_mode)
 	}
 	return stamp_get_ntp_timestamp(sec, frac);
 }
+
+#ifdef _WIN32
+/**
+ * FILETIME値をSTAMPタイムスタンプ（NTP/PTP形式）に変換
+ * @param filetime Windows FILETIME値（1601-01-01からの100ナノ秒単位）
+ * @param out_sec 秒部分を格納するポインタ（ネットワークバイトオーダー）
+ * @param out_frac 小数部分を格納するポインタ（ネットワークバイトオーダー）
+ * @param ptp_mode true=PTP形式, false=NTP形式
+ * @return 変換成功時true、FILETIME値が不正な場合false
+ */
+static inline bool convert_filetime_to_stamp(UINT64 filetime,
+					     uint32_t *out_sec,
+					     uint32_t *out_frac,
+					     bool ptp_mode)
+{
+	if (filetime < WINDOWS_FILETIME_Y2K_THRESHOLD) {
+		return false;
+	}
+
+	uint64_t unix_time = (filetime / WINDOWS_TICKS_PER_SEC) -
+			     WINDOWS_TO_NTP_OFFSET;
+	uint64_t frac_100ns = filetime % WINDOWS_TICKS_PER_SEC;
+
+	*out_sec = htonl((uint32_t)(unix_time + NTP_OFFSET));
+	if (ptp_mode) {
+		uint32_t ns = (uint32_t)(frac_100ns * 100ULL);
+		*out_frac = htonl(ns <= PTP_NSEC_MAX ? ns : PTP_NSEC_MAX);
+	} else {
+		*out_frac = htonl(WINDOWS_100NS_TO_NTP_FRAC(frac_100ns));
+	}
+	return true;
+}
+#endif // _WIN32
 
 #ifndef _WIN32
 /**
