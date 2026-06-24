@@ -1779,20 +1779,48 @@ static void test_negative_delay_detection(void)
 
 static void test_statistics_calculation(void)
 {
-	// stamp_jitter: 値 {1,2,3,4,5}, sum=15, sum_sq=55, count=5
-	// avg=3, var=55/5-9=2, std=sqrt(2)≈1.414
-	double jitter = stamp_jitter(15.0, 55.0, 5);
-	EXPECT_NEAR_DOUBLE(jitter,
-			   1.414,
-			   0.01,
-			   "stamp_jitter with known values");
+	// Welford 基本: 値 {1,2,3,4,5} → count=5, mean=3,
+	// 標本分散=2.5, 標本標準偏差=sqrt(2.5)≈1.5811, min=1, max=5
+	struct stamp_welford w;
+	stamp_welford_init(&w);
+	const double values[] = {1.0, 2.0, 3.0, 4.0, 5.0};
+	for (int i = 0; i < 5; i++) {
+		stamp_welford_update(&w, values[i]);
+	}
+	EXPECT_EQ_ULL(stamp_welford_count(&w), 5, "welford count = 5");
+	EXPECT_NEAR_DOUBLE(stamp_welford_mean(&w), 3.0, 0.001, "welford mean");
+	EXPECT_NEAR_DOUBLE(stamp_welford_stddev(&w),
+			   1.5811,
+			   0.001,
+			   "welford sample stddev (n-1)");
+	EXPECT_NEAR_DOUBLE(stamp_welford_min(&w), 1.0, 0.001, "welford min");
+	EXPECT_NEAR_DOUBLE(stamp_welford_max(&w), 5.0, 0.001, "welford max");
 
-	// 単一サンプル: jitter=0
-	double single_jitter = stamp_jitter(2.5, 6.25, 1);
-	EXPECT_NEAR_DOUBLE(single_jitter,
+	// 単一サンプル: stddev=0, min=max=mean=x
+	struct stamp_welford single;
+	stamp_welford_init(&single);
+	stamp_welford_update(&single, 2.5);
+	EXPECT_NEAR_DOUBLE(stamp_welford_stddev(&single),
 			   0.0,
 			   0.001,
-			   "stamp_jitter single sample");
+			   "welford single sample stddev=0");
+	EXPECT_NEAR_DOUBLE(stamp_welford_min(&single),
+			   2.5,
+			   0.001,
+			   "welford single sample min");
+
+	// 空（サンプルなし）: count=0, mean/stddev/min/max=0.0
+	struct stamp_welford empty;
+	stamp_welford_init(&empty);
+	EXPECT_EQ_ULL(stamp_welford_count(&empty), 0, "welford empty count=0");
+	EXPECT_NEAR_DOUBLE(stamp_welford_mean(&empty),
+			   0.0,
+			   0.001,
+			   "welford empty mean=0");
+	EXPECT_NEAR_DOUBLE(stamp_welford_stddev(&empty),
+			   0.0,
+			   0.001,
+			   "welford empty stddev=0");
 }
 
 static void test_packet_loss_calculation(void)
@@ -2817,65 +2845,310 @@ static void test_stamp_ptp_to_double_edge_cases(void)
 
 static void test_jitter_calculation(void)
 {
-	// 分散・標準偏差の計算検証
-	// 値: 1, 2, 3, 4, 5 → 平均3, 分散2, std=sqrt(2)≈1.414
-	const double values[] = {1.0, 2.0, 3.0, 4.0, 5.0};
-	int count = 5;
-	double sum = 0;
-	double sum_sq = 0;
-
-	for (int i = 0; i < count; i++) {
-		sum += values[i];
-		sum_sq += values[i] * values[i];
+	// 定数列 {5,5,5} → 標準偏差 = 0
+	struct stamp_welford w;
+	stamp_welford_init(&w);
+	for (int i = 0; i < 3; i++) {
+		stamp_welford_update(&w, 5.0);
 	}
-
-	double jitter = stamp_jitter(sum, sum_sq, (uint32_t)count);
-	EXPECT_NEAR_DOUBLE(sum / count, 3.0, 0.001, "jitter avg");
-	EXPECT_NEAR_DOUBLE(jitter, 1.414, 0.01, "jitter stddev");
-
-	// 定数列 → jitter = 0
-	const double const_values[] = {5.0, 5.0, 5.0};
-	int const_count = 3;
-	sum = 0;
-	sum_sq = 0;
-	for (int i = 0; i < const_count; i++) {
-		sum += const_values[i];
-		sum_sq += const_values[i] * const_values[i];
-	}
-	double jitter_const = stamp_jitter(sum, sum_sq, (uint32_t)const_count);
-	EXPECT_NEAR_DOUBLE(jitter_const,
+	EXPECT_NEAR_DOUBLE(stamp_welford_mean(&w),
+			   5.0,
+			   0.001,
+			   "welford constant mean=5");
+	EXPECT_NEAR_DOUBLE(stamp_welford_stddev(&w),
 			   0.0,
 			   0.001,
-			   "jitter constant values = 0");
+			   "welford constant stddev=0");
 
-	// count=0 エッジケース
-	EXPECT_NEAR_DOUBLE(stamp_jitter(0.0, 0.0, 0),
+	// 負値を含む列 {-2,-1,0,1,2} → mean=0, min=-2, max=2,
+	// 標本分散=2.5, stddev=sqrt(2.5)≈1.5811（負オフセット初期化バグの回帰防止）
+	struct stamp_welford neg;
+	stamp_welford_init(&neg);
+	const double neg_values[] = {-2.0, -1.0, 0.0, 1.0, 2.0};
+	for (int i = 0; i < 5; i++) {
+		stamp_welford_update(&neg, neg_values[i]);
+	}
+	EXPECT_NEAR_DOUBLE(stamp_welford_mean(&neg),
 			   0.0,
 			   0.001,
-			   "jitter count=0");
+			   "welford neg mean=0");
+	EXPECT_NEAR_DOUBLE(stamp_welford_min(&neg),
+			   -2.0,
+			   0.001,
+			   "welford neg min");
+	EXPECT_NEAR_DOUBLE(stamp_welford_max(&neg),
+			   2.0,
+			   0.001,
+			   "welford neg max");
+	EXPECT_NEAR_DOUBLE(stamp_welford_stddev(&neg),
+			   1.5811,
+			   0.001,
+			   "welford neg stddev");
 }
 
 /**
- * 7a. stamp_jitter エッジケーステスト
+ * 7a. Welford 数値安定性・エッジケーステスト
  */
 static void test_stamp_jitter_edge_cases(void)
 {
-	// count=0 → 0.0
-	EXPECT_NEAR_DOUBLE(stamp_jitter(10.0, 100.0, 0),
+	// 桁落ち回帰防止: 1e9 + {1,2,3,4,5} の大オフセット列でも
+	// 標本標準偏差は sqrt(2.5)≈1.5811 に一致する
+	// （旧 stamp_jitter の (sum_sq/count)-avg^2 では誤差が増大した）
+	struct stamp_welford w;
+	stamp_welford_init(&w);
+	const double base = 1e9;
+	for (int i = 1; i <= 5; i++) {
+		stamp_welford_update(&w, base + (double)i);
+	}
+	EXPECT_NEAR_DOUBLE(stamp_welford_stddev(&w),
+			   1.5811,
+			   0.001,
+			   "welford numerical stability (large offset)");
+	EXPECT_NEAR_DOUBLE(stamp_welford_mean(&w),
+			   base + 3.0,
+			   0.001,
+			   "welford numerical stability mean");
+
+	// count=0 ガード → stddev=0
+	struct stamp_welford empty;
+	stamp_welford_init(&empty);
+	EXPECT_NEAR_DOUBLE(stamp_welford_stddev(&empty),
 			   0.0,
 			   1e-9,
-			   "jitter count=0");
-	// 負分散ガード: sum=10, sum_sq=19, count=5
-	// var = 19/5 - (10/5)^2 = 3.8 - 4.0 = -0.2 → should return 0.0
-	EXPECT_NEAR_DOUBLE(stamp_jitter(10.0, 19.0, 5),
+			   "welford count=0 stddev=0");
+
+	// count=1 ガード（n-1=0 の 0 除算回避） → stddev=0
+	struct stamp_welford single;
+	stamp_welford_init(&single);
+	stamp_welford_update(&single, 42.0);
+	EXPECT_NEAR_DOUBLE(stamp_welford_stddev(&single),
 			   0.0,
 			   1e-9,
-			   "jitter negative variance");
-	// count=1: var = sum_sq/1 - (sum/1)^2 = 0 → 0.0
-	EXPECT_NEAR_DOUBLE(stamp_jitter(5.0, 25.0, 1),
+			   "welford count=1 stddev=0");
+}
+
+/**
+ * 7c. パーセンタイル計算テスト（nearest-rank, RFC 7679 EDF）
+ */
+static void test_stamp_percentile_sorted_basic(void)
+{
+	// {1,2,...,10} 昇順。p50→ceil(0.5*10)=5→idx4→5,
+	// p95→ceil(9.5)=10→idx9→10, p99→ceil(9.9)=10→10
+	const double sorted[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+	size_t n = 10;
+	EXPECT_NEAR_DOUBLE(stamp_percentile_sorted(sorted, n, 50.0),
+			   5.0,
+			   0.001,
+			   "percentile p50 (median)");
+	EXPECT_NEAR_DOUBLE(stamp_percentile_sorted(sorted, n, 95.0),
+			   10.0,
+			   0.001,
+			   "percentile p95");
+	EXPECT_NEAR_DOUBLE(stamp_percentile_sorted(sorted, n, 99.0),
+			   10.0,
+			   0.001,
+			   "percentile p99");
+	EXPECT_NEAR_DOUBLE(stamp_percentile_sorted(sorted, n, 0.0),
+			   1.0,
+			   0.001,
+			   "percentile p0 (min)");
+	EXPECT_NEAR_DOUBLE(stamp_percentile_sorted(sorted, n, 100.0),
+			   10.0,
+			   0.001,
+			   "percentile p100 (max)");
+}
+
+static void test_stamp_percentile_sorted_edge(void)
+{
+	// n=0 → NAN（nonnull のためダミーの有効ポインタを渡す）
+	const double dummy[1] = {0.0};
+	EXPECT_TRUE(isnan(stamp_percentile_sorted(dummy, 0, 50.0)),
+		    "percentile n=0 → NAN");
+	// n=1 → 全 p が唯一値
+	const double single[1] = {42.0};
+	EXPECT_NEAR_DOUBLE(stamp_percentile_sorted(single, 1, 50.0),
+			   42.0,
+			   0.001,
+			   "percentile n=1 p50");
+	EXPECT_NEAR_DOUBLE(stamp_percentile_sorted(single, 1, 99.0),
+			   42.0,
+			   0.001,
+			   "percentile n=1 p99");
+}
+
+static void test_stamp_double_cmp_nan(void)
+{
+	// NaN を末尾へ、有限値は昇順、Inf は有限値の後（qsort 順序破壊の回帰防止）
+	double arr[] = {3.0, NAN, 1.0, INFINITY, 2.0};
+	size_t n = 5;
+	qsort(arr, n, sizeof(double), stamp_double_cmp);
+	// 期待: 1, 2, 3, INFINITY, NaN
+	EXPECT_NEAR_DOUBLE(arr[0], 1.0, 0.001, "cmp sorted[0]=1");
+	EXPECT_NEAR_DOUBLE(arr[1], 2.0, 0.001, "cmp sorted[1]=2");
+	EXPECT_NEAR_DOUBLE(arr[2], 3.0, 0.001, "cmp sorted[2]=3");
+	EXPECT_TRUE(isinf(arr[3]), "cmp Inf before NaN");
+	EXPECT_TRUE(isnan(arr[4]), "cmp NaN at end");
+}
+
+/**
+ * 7d. PDV (RFC 5481) テスト: 高分位(p95) − 最小
+ */
+static void test_stamp_pdv_from_sorted(void)
+{
+	// {1,2,...,10} 昇順。p95→idx9→10、min→1、PDV=10-1=9
+	const double sorted[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+	EXPECT_NEAR_DOUBLE(stamp_pdv_from_sorted(sorted, 10),
+			   9.0,
+			   0.001,
+			   "PDV p95-min = 9");
+	// 定数列 → PDV = 0
+	const double constant[] = {5, 5, 5, 5};
+	EXPECT_NEAR_DOUBLE(stamp_pdv_from_sorted(constant, 4),
 			   0.0,
-			   1e-9,
-			   "jitter single sample");
+			   0.001,
+			   "PDV constant = 0");
+	// n=0 → NAN（nonnull のためダミーの有効ポインタを渡す）
+	const double dummy[1] = {0.0};
+	EXPECT_TRUE(isnan(stamp_pdv_from_sorted(dummy, 0)),
+		    "PDV n=0 → NAN");
+}
+
+/**
+ * 7e. IPDV 隣接性判定テスト（seq の uint32_t ラップ考慮）
+ */
+static void test_stamp_seq_is_consecutive(void)
+{
+	EXPECT_TRUE(stamp_seq_is_consecutive(5, 6), "seq 5→6 consecutive");
+	EXPECT_TRUE(!stamp_seq_is_consecutive(5, 7),
+		    "seq 5→7 not consecutive (loss)");
+	EXPECT_TRUE(!stamp_seq_is_consecutive(5, 5),
+		    "seq 5→5 not consecutive");
+	// uint32_t ラップ: UINT32_MAX の次は 0
+	EXPECT_TRUE(stamp_seq_is_consecutive(UINT32_MAX, 0),
+		    "seq wrap UINT32_MAX→0 consecutive");
+}
+
+/**
+ * 7f. レポート（JSON/CSV）シリアライザのテスト
+ */
+static void test_stamp_report_fmt_double(void)
+{
+	char buf[STAMP_REPORT_NUM_MAX];
+	stamp_report_fmt_double(buf, sizeof(buf), 1.5, 3);
+	EXPECT_TRUE(strcmp(buf, "1.500") == 0, "fmt 1.5 → 1.500");
+	stamp_report_fmt_double(buf, sizeof(buf), 0.123456, 6);
+	EXPECT_TRUE(strcmp(buf, "0.123456") == 0, "fmt prec 6");
+	// 非有限値は空文字
+	stamp_report_fmt_double(buf, sizeof(buf), NAN, 3);
+	EXPECT_TRUE(buf[0] == '\0', "fmt NaN → empty");
+	stamp_report_fmt_double(buf, sizeof(buf), INFINITY, 3);
+	EXPECT_TRUE(buf[0] == '\0', "fmt Inf → empty");
+}
+
+static void test_stamp_report_json_escape(void)
+{
+	char out[64];
+	stamp_report_json_escape("a\"b\\c", out, sizeof(out));
+	EXPECT_TRUE(strcmp(out, "a\\\"b\\\\c") == 0,
+		    "escape quote and backslash");
+	const char ctrl[2] = {(char)0x01, '\0'};
+	stamp_report_json_escape(ctrl, out, sizeof(out));
+	EXPECT_TRUE(strcmp(out, "\\u0001") == 0, "escape control char");
+}
+
+static void test_stamp_report_iso8601_utc_format(void)
+{
+	char buf[STAMP_REPORT_TS_MAX] = {0};
+	int rc = stamp_report_iso8601_utc(buf, sizeof(buf));
+	EXPECT_TRUE(rc == 0, "iso8601 returns 0");
+	EXPECT_TRUE(strlen(buf) == 20, "iso8601 length 20");
+	EXPECT_TRUE(buf[10] == 'T', "iso8601 has T separator");
+	EXPECT_TRUE(buf[19] == 'Z', "iso8601 ends with Z");
+}
+
+static void test_stamp_report_write_json_basic(void)
+{
+	const struct stamp_report_field fields[] = {
+		{"rtt_min_ms", 0.123},
+		{"rtt_max_ms", NAN}, // → null
+	};
+	struct stamp_report r = {
+		.target = "127.0.0.1:862",
+		.family = "IPv4",
+		.ptp = false,
+		.oneway = false,
+		.packets_tx = 10,
+		.packets_rx = 9,
+		.timeouts = 1,
+		.loss_ratio = 0.1,
+		.fields = fields,
+		.field_count = 2,
+	};
+	FILE *fp = tmpfile();
+	EXPECT_TRUE(fp != NULL, "json tmpfile created");
+	if (fp == NULL) {
+		return;
+	}
+	stamp_report_write_json(fp, &r);
+	if (fseek(fp, 0, SEEK_SET) != 0) {
+		fclose(fp);
+		EXPECT_TRUE(0, "fseek failed");
+		return;
+	}
+	char out[1024] = {0};
+	size_t got = fread(out, 1, sizeof(out) - 1, fp);
+	out[got] = '\0';
+	fclose(fp);
+	EXPECT_TRUE(strstr(out, "\"format_version\": \"1.0\"") != NULL,
+		    "json has format_version");
+	EXPECT_TRUE(strstr(out, "\"rtt_min_ms\": 0.123") != NULL,
+		    "json has rtt_min value");
+	EXPECT_TRUE(strstr(out, "\"rtt_max_ms\": null") != NULL,
+		    "json NaN field → null");
+	EXPECT_TRUE(strstr(out, "\"packets_tx\": 10") != NULL,
+		    "json has packets_tx");
+}
+
+static void test_stamp_report_write_csv_basic(void)
+{
+	const struct stamp_report_field fields[] = {
+		{"rtt_min_ms", 0.123},
+		{"rtt_max_ms", NAN}, // → 空フィールド
+	};
+	struct stamp_report r = {
+		.target = "127.0.0.1:862",
+		.family = "IPv4",
+		.ptp = false,
+		.oneway = false,
+		.packets_tx = 10,
+		.packets_rx = 9,
+		.timeouts = 1,
+		.loss_ratio = 0.1,
+		.fields = fields,
+		.field_count = 2,
+	};
+	FILE *fp = tmpfile();
+	EXPECT_TRUE(fp != NULL, "csv tmpfile created");
+	if (fp == NULL) {
+		return;
+	}
+	stamp_report_write_csv(fp, &r);
+	if (fseek(fp, 0, SEEK_SET) != 0) {
+		fclose(fp);
+		EXPECT_TRUE(0, "fseek failed");
+		return;
+	}
+	char out[1024] = {0};
+	size_t got = fread(out, 1, sizeof(out) - 1, fp);
+	out[got] = '\0';
+	fclose(fp);
+	EXPECT_TRUE(strstr(out, "# format_version=1.0") != NULL,
+		    "csv has version comment");
+	EXPECT_TRUE(strstr(out, "rtt_min_ms,rtt_max_ms") != NULL,
+		    "csv header has keys");
+	// データ行末は ",0.123," + 空(NaN) で終わる
+	EXPECT_TRUE(strstr(out, ",0.123,\n") != NULL,
+		    "csv value then empty NaN field");
 }
 
 /**
@@ -4530,6 +4803,16 @@ int main(void)
 	test_packet_loss_calculation();
 	test_packet_loss_underflow();
 	test_stamp_jitter_edge_cases();
+	test_stamp_percentile_sorted_basic();
+	test_stamp_percentile_sorted_edge();
+	test_stamp_double_cmp_nan();
+	test_stamp_pdv_from_sorted();
+	test_stamp_seq_is_consecutive();
+	test_stamp_report_fmt_double();
+	test_stamp_report_json_escape();
+	test_stamp_report_iso8601_utc_format();
+	test_stamp_report_write_json_basic();
+	test_stamp_report_write_csv_basic();
 	test_stamp_packet_loss_edge_cases();
 
 	// Phase 8: パケット構築

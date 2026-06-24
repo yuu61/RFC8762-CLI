@@ -384,23 +384,207 @@ __attribute__((const)) static inline double stamp_packet_loss(uint32_t sent,
 	return 100.0 * (double)(sent - received) / (double)sent;
 }
 
+// =============================================================================
+// Welford オンライン分散アルゴリズム（数値安定な平均・標準偏差・最小・最大）
+// =============================================================================
+
 /**
- * ジッター (標準偏差) を計算
- * @param sum 値の合計
- * @param sum_sq 値の二乗和
- * @param count サンプル数
- * @return ジッター (標準偏差)
+ * Welford のオンラインアルゴリズム用アキュムレータ。
+ *
+ * 平均・分散（標本標準偏差 n-1）・最小・最大を単一パス・O(1) メモリで
+ * 数値安定に逐次計算する。旧 stamp_jitter の (sum_sq/count)-avg^2 方式は、
+ * 平均 ≫ 標準偏差（網羅遅延 mean=100ms, std=0.001ms 等）の典型ケースで
+ * 桁落ち（catastrophic cancellation）を起こすため、本方式で根治する。
+ *
+ * count==0 を未初期化マーカーとして扱い、最初のサンプルで min/max を確定する。
+ * これにより負値（クロックオフセット等）でも正しく min/max を捕捉できる。
  */
-__attribute__((const)) static inline double stamp_jitter(double sum,
-							 double sum_sq,
-							 uint32_t count)
+struct stamp_welford {
+	uint64_t count;
+	double mean;
+	double m2; // 平均からの偏差二乗和（分散 × (n-1)）
+	double min;
+	double max;
+};
+
+/**
+ * Welford アキュムレータを初期化（全フィールド 0 クリア）
+ * @param w アキュムレータ
+ */
+__attribute__((nonnull(1))) static inline void
+stamp_welford_init(struct stamp_welford *w)
 {
-	if (count == 0) {
+	w->count = 0;
+	w->mean = 0.0;
+	w->m2 = 0.0;
+	w->min = 0.0;
+	w->max = 0.0;
+}
+
+/**
+ * Welford アキュムレータにサンプル x を追加
+ * @param w アキュムレータ
+ * @param x サンプル値
+ */
+__attribute__((nonnull(1))) static inline void
+stamp_welford_update(struct stamp_welford *w, double x)
+{
+	w->count++;
+	double delta = x - w->mean;
+	w->mean += delta / (double)w->count;
+	double delta2 = x - w->mean;
+	w->m2 += delta * delta2;
+	if (w->count == 1) {
+		w->min = x;
+		w->max = x;
+	} else {
+		if (x < w->min) {
+			w->min = x;
+		}
+		if (x > w->max) {
+			w->max = x;
+		}
+	}
+}
+
+/**
+ * 平均を取得（サンプルなしの場合 0.0）
+ * @param w アキュムレータ
+ * @return 平均値
+ */
+__attribute__((pure, nonnull(1))) static inline double
+stamp_welford_mean(const struct stamp_welford *w)
+{
+	return w->count == 0 ? 0.0 : w->mean;
+}
+
+/**
+ * 標本標準偏差 (n-1) を取得
+ * @param w アキュムレータ
+ * @return 標本標準偏差。サンプル数 < 2 の場合 0.0
+ */
+__attribute__((pure, nonnull(1))) static inline double
+stamp_welford_stddev(const struct stamp_welford *w)
+{
+	if (w->count < 2) {
 		return 0.0;
 	}
-	double avg = sum / count;
-	double var = (sum_sq / count) - (avg * avg);
-	return var > 0 ? sqrt(var) : 0.0;
+	double var = w->m2 / (double)(w->count - 1);
+	return var > 0.0 ? sqrt(var) : 0.0;
+}
+
+/**
+ * 最小値を取得（サンプルなしの場合 0.0）
+ * @param w アキュムレータ
+ * @return 最小値
+ */
+__attribute__((pure, nonnull(1))) static inline double
+stamp_welford_min(const struct stamp_welford *w)
+{
+	return w->count == 0 ? 0.0 : w->min;
+}
+
+/**
+ * 最大値を取得（サンプルなしの場合 0.0）
+ * @param w アキュムレータ
+ * @return 最大値
+ */
+__attribute__((pure, nonnull(1))) static inline double
+stamp_welford_max(const struct stamp_welford *w)
+{
+	return w->count == 0 ? 0.0 : w->max;
+}
+
+/**
+ * サンプル数を取得
+ * @param w アキュムレータ
+ * @return サンプル数
+ */
+__attribute__((pure, nonnull(1))) static inline uint64_t
+stamp_welford_count(const struct stamp_welford *w)
+{
+	return w->count;
+}
+
+// =============================================================================
+// パーセンタイル計算（全サンプル保持 → qsort → nearest-rank）
+// =============================================================================
+
+/**
+ * qsort 用の double 比較関数。
+ * NaN を末尾に寄せて全順序の破壊（qsort の未定義動作）を防ぐ。
+ * @param a 比較対象 1 へのポインタ
+ * @param b 比較対象 2 へのポインタ
+ * @return a<b で負、a>b で正、等価で 0。NaN は他のあらゆる値より大きい扱い
+ */
+static inline int stamp_double_cmp(const void *a, const void *b)
+{
+	double x = *(const double *)a;
+	double y = *(const double *)b;
+	int nx = isnan(x) ? 1 : 0;
+	int ny = isnan(y) ? 1 : 0;
+	if (nx || ny) {
+		return nx - ny; // NaN を末尾へ（NaN==NaN は 0）
+	}
+	return (x > y) - (x < y);
+}
+
+/**
+ * 昇順ソート済み配列に対する nearest-rank パーセンタイル (RFC 7679 EDF)。
+ * @param sorted 昇順ソート済み配列（非 NULL）
+ * @param n 要素数
+ * @param p パーセンタイル (0.0..100.0)
+ * @return p パーセンタイル値。n==0 の場合 NAN。p=50 で中央値を兼ねる
+ */
+__attribute__((pure, nonnull(1))) static inline double
+stamp_percentile_sorted(const double *sorted, size_t n, double p)
+{
+	if (n == 0) {
+		return NAN;
+	}
+	if (n == 1) {
+		return sorted[0];
+	}
+	// nearest-rank: rank = ceil(p/100 * n)、0 始まり添字に変換
+	double rank = ceil(p / 100.0 * (double)n);
+	size_t idx = rank <= 1.0 ? 0 : (size_t)rank - 1;
+	if (idx >= n) {
+		idx = n - 1;
+	}
+	return sorted[idx];
+}
+
+// =============================================================================
+// 遅延変動（ジッタ）: IPDV (RFC 3393) / PDV (RFC 5481)
+// =============================================================================
+
+/**
+ * 2 つの seq 番号が連続するか判定する（IPDV の隣接性判定）。
+ * uint32_t のラップアラウンド（RFC 8762 準拠）を考慮する。
+ * @param prev 直前パケットの seq
+ * @param cur 今回パケットの seq
+ * @return prev の次が cur なら true
+ */
+__attribute__((const)) static inline bool
+stamp_seq_is_consecutive(uint32_t prev, uint32_t cur)
+{
+	return (uint32_t)(prev + 1) == cur;
+}
+
+/**
+ * RFC 5481 PDV (Packet Delay Variation) = 高分位 − 最小。既定で p95 − min。
+ * 最小値を基準とするため常に非負（IPDV と異なり符号を持たない）。
+ * @param sorted 昇順ソート済み配列（非 NULL）
+ * @param n 要素数
+ * @return PDV。n==0 の場合 NAN
+ */
+__attribute__((pure, nonnull(1))) static inline double
+stamp_pdv_from_sorted(const double *sorted, size_t n)
+{
+	if (n == 0) {
+		return NAN;
+	}
+	return stamp_percentile_sorted(sorted, n, 95.0) - sorted[0];
 }
 
 #endif // STAMP_TIME_H

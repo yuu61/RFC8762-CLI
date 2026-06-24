@@ -15,7 +15,7 @@
 ### Sender
 
 ```
-Usage: sender [-4|-6] [-P] [-c] [-O] [-i iface] [server_ip|hostname] [port]
+Usage: sender [-4|-6] [-P] [-c] [-O] [-n count] [-w sec] [-o fmt] [-i iface] [server_ip|hostname] [port]
 ```
 
 | オプション | 説明 |
@@ -26,6 +26,11 @@ Usage: sender [-4|-6] [-P] [-c] [-O] [-i iface] [server_ip|hostname] [port]
 | `-i iface` | HW タイムスタンプ用ネットワークインターフェース（Linux のみ） |
 | `-c` | PHC (PTP Hardware Clock) を使用（`-i` 必須、Linux のみ） |
 | `-O` | 片方向遅延測定モード |
+| `-n count` | 指定本数を送信したら停止（パーセンタイルを有効化） |
+| `-w sec` | 指定秒数で停止（パーセンタイルを有効化） |
+| `-o fmt` | 出力形式: `human`（既定）/ `json` / `csv` |
+
+`-n` / `-w` のいずれも指定しない場合は `Ctrl+C` まで無制限に測定する（パーセンタイル・PDV は全サンプル保持が必要なため、有限計測時のみ算出される）。`-n` と `-w` を同時に指定した場合は先に到達した条件で停止する。
 
 ### Reflector
 
@@ -41,6 +46,37 @@ Usage: reflector [-4|-6] [-d] [-P] [-c] [-i iface] [port]
 | `-P` | PTP タイムスタンプ形式を使用（Z=1） |
 | `-i iface` | HW タイムスタンプ用ネットワークインターフェース（Linux のみ） |
 | `-c` | PHC (PTP Hardware Clock) を使用（`-i` 必須、Linux のみ） |
+
+## 統計出力
+
+測定終了時（`Ctrl+C` または `-n`/`-w` 到達）に Sender が統計サマリを出力する。標準偏差はすべて標本標準偏差（n-1）で計算する。
+
+| 指標 | 説明 |
+| -- | -- |
+| RTT min/avg/max/stddev | 往復遅延の最小・平均・最大・標準偏差 |
+| Clock offset min/avg/max/stddev | 推定クロックオフセット（送受信の非対称性の指標） |
+| Forward/Backward min/avg/max/jitter | 片方向遅延（`-O` 時）。jitter は標本標準偏差 |
+| IPDV avg/max | 連続パケット間遅延変動 \|D(i)−D(i−1)\|（RFC 3393）。ロスで seq が飛んだペアは除外 |
+| p50/p95/p99 | パーセンタイル（中央値=p50）。`-n`/`-w` 指定時のみ |
+| PDV (p95−min) | パケット遅延変動（RFC 5481）。`-n`/`-w` 指定時のみ |
+
+数値計算には Welford のオンラインアルゴリズムを用い、平均 ≫ 標準偏差の場合でも桁落ちなく分散を求める。
+
+### 機械可読出力（JSON / CSV）
+
+`-o json` / `-o csv` で構造化出力に切り替える（毎パケット行と開始バナーは抑制され、最終サマリのみを 1 オブジェクト / 1 行で出力する）。クロックスキュー警告は全形式で `stderr` に出る。
+
+```bash
+# JSON（500本測定して 1 オブジェクトを出力）
+./build/release/sender -o json -n 500 192.168.1.100 | jq .
+
+# CSV（コメント行 + ヘッダ行 + データ 1 行）
+./build/release/sender -o csv -w 10 192.168.1.100 > result.csv
+```
+
+- 全形式に `format_version`（現行 `"1.0"`）を埋め込む。遅延はミリ秒、`loss_ratio` は 0.0–1.0、タイムスタンプは ISO8601 UTC。
+- 未集計の指標（例: 非 `-O` モードの `fwd_*`、サンプル未保持時の `*_p95_ms`）は **JSON では `null`、CSV では空フィールド**となる。`null`/空は「欠損」を意味する。
+- 小数点はロケールに依存せず常に `.`。
 
 ## 基本的な使用例
 
