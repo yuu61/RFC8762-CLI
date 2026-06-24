@@ -45,11 +45,11 @@ cmake --build --preset release
 ```
 STAMP Sender targeting 127.0.0.1:862
 Press Ctrl+C to stop and show statistics
-Seq  Fwd(ms)   Bwd(ms)   RTT(ms)  Offset(ms)  [adj_Fwd]  [adj_Bwd]
---------------------------------------------------------------------------------------------
-0    0.152     0.148     0.300    0.002       0.150      0.150
-1    0.145     0.155     0.300    -0.005      0.150      0.150
-2    0.148     0.152     0.300    -0.002      0.150      0.150
+Seq  Fwd(ms)   Bwd(ms)   RTT(ms)  Offset(ms)
+-------------------------------------------------
+0    0.152     0.148     0.300    0.002
+1    0.145     0.155     0.300    -0.005
+2    0.148     0.152     0.300    -0.002
 ^C
 --- STAMP Statistics ---
 Packets sent: 3

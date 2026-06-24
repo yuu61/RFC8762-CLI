@@ -480,9 +480,7 @@ static inline void print_measurement_result(uint32_t seq_nbo,
 					    double forward_delay,
 					    double backward_delay,
 					    double rtt,
-					    double offset,
-					    double adj_forward,
-					    double adj_backward)
+					    double offset)
 {
 	if (g_oneway_mode) {
 		printf("%" PRIu32 "\t%.3f\t\t%.3f\t\t%.3f\n",
@@ -491,15 +489,12 @@ static inline void print_measurement_result(uint32_t seq_nbo,
 		       backward_delay,
 		       offset);
 	} else {
-		printf("%" PRIu32
-		       "\t%.3f\t\t%.3f\t\t%.3f\t%.3f\t\t%.3f\t\t%.3f\n",
+		printf("%" PRIu32 "\t%.3f\t\t%.3f\t\t%.3f\t%.3f\n",
 		       (uint32_t)ntohl(seq_nbo),
 		       forward_delay,
 		       backward_delay,
 		       rtt,
-		       offset,
-		       adj_forward,
-		       adj_backward);
+		       offset);
 	}
 }
 
@@ -553,8 +548,6 @@ static void compute_and_report_delays(
 	double backward_delay = stamp_backward_delay(t3, t4);
 	double rtt = stamp_rtt(forward_delay, backward_delay);
 	double offset = stamp_clock_offset(t1, t2, t3, t4);
-	double adj_forward = forward_delay - offset;
-	double adj_backward = backward_delay + offset;
 
 	if (forward_delay < 0 || backward_delay < 0) {
 		g_negative_delay_seen = true;
@@ -569,9 +562,7 @@ static void compute_and_report_delays(
 				 forward_delay,
 				 backward_delay,
 				 rtt,
-				 offset,
-				 adj_forward,
-				 adj_backward);
+				 offset);
 }
 
 /**
@@ -756,10 +747,9 @@ __attribute__((cold)) static void print_sender_start_message(
 		printf("-------------------------------------------"
 		       "--------\n");
 	} else {
-		printf("Seq\tFwd(ms)\t\tBwd(ms)\t\tRTT(ms)\tOffset(ms)"
-		       "\t[adj_Fwd]\t[adj_Bwd]\n");
+		printf("Seq\tFwd(ms)\t\tBwd(ms)\t\tRTT(ms)\tOffset(ms)\n");
 		printf("-------------------------------------------"
-		       "------------------------------------------------\n");
+		       "--------\n");
 	}
 }
 
