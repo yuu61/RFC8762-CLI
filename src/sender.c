@@ -247,9 +247,9 @@ compute_series_dist(double *arr, size_t n)
 	d.p50 = stamp_percentile_sorted(arr, n, 50.0);
 	d.p95 = stamp_percentile_sorted(arr, n, 95.0);
 	d.p99 = stamp_percentile_sorted(arr, n, 99.0);
-	// PDV (RFC 5481) = p95 - 最小値。ソート済みで arr[0] が最小なので、
-	// 算出済みの p95 を再利用する（p95 の二重計算を回避）
-	d.pdv = d.p95 - arr[0];
+	// PDV (RFC 5481) は正典ヘルパーへ委譲し、指標定義を 1 箇所へ集約する
+	// （sender 側のインライン再実装による定義の乖離・無テスト化を防ぐ）。
+	d.pdv = stamp_pdv_from_sorted(arr, n);
 	return d;
 }
 
@@ -290,6 +290,25 @@ static void print_ipdv(const char *label, const struct stamp_welford *ipdv)
 }
 
 /**
+ * human 出力用に標準偏差を整形する。標本標準偏差(n-1)はサンプル数<2で未定義の
+ * ため、0.000 で偽装せず "n/a" を返す（machine 出力の null/空と意味を揃える）。
+ * @param buf 出力バッファ
+ * @param buflen バッファ長
+ * @param w Welford アキュムレータ
+ * @return buf（整形済み文字列）
+ */
+__attribute__((nonnull(1, 3))) static const char *
+fmt_stddev_human(char *buf, size_t buflen, const struct stamp_welford *w)
+{
+	if (stamp_welford_count(w) < 2) {
+		snprintf(buf, buflen, "n/a");
+	} else {
+		stamp_report_fmt_double(buf, buflen, stamp_welford_stddev(w), 3);
+	}
+	return buf;
+}
+
+/**
  * 統計情報の表示（人間可読テキスト）
  */
 __attribute__((cold)) static void print_statistics_human(void)
@@ -301,39 +320,43 @@ __attribute__((cold)) static void print_statistics_human(void)
 	       stamp_packet_loss(g_stats.sent, g_stats.received));
 	printf("Timeouts: %u\n", g_stats.timeouts);
 	if (g_stats.received > 0) {
-		printf("RTT min/avg/max/stddev = %.3f/%.3f/%.3f/%.3f ms\n",
+		char sd[STAMP_REPORT_NUM_MAX];
+		printf("RTT min/avg/max/stddev = %.3f/%.3f/%.3f/%s ms\n",
 		       stamp_welford_min(&g_stats.rtt),
 		       stamp_welford_mean(&g_stats.rtt),
 		       stamp_welford_max(&g_stats.rtt),
-		       stamp_welford_stddev(&g_stats.rtt));
+		       fmt_stddev_human(sd, sizeof(sd), &g_stats.rtt));
 		printf("Clock offset min/avg/max/stddev = "
-		       "%.3f/%.3f/%.3f/%.3f ms\n",
+		       "%.3f/%.3f/%.3f/%s ms\n",
 		       stamp_welford_min(&g_stats.offset),
 		       stamp_welford_mean(&g_stats.offset),
 		       stamp_welford_max(&g_stats.offset),
-		       stamp_welford_stddev(&g_stats.offset));
+		       fmt_stddev_human(sd, sizeof(sd), &g_stats.offset));
 		print_ipdv("RTT     ", &g_stats.ipdv_rtt);
 		if (g_oneway_mode) {
 			printf("Forward  min/avg/max/jitter = "
-			       "%.3f/%.3f/%.3f/%.3f ms\n",
+			       "%.3f/%.3f/%.3f/%s ms\n",
 			       stamp_welford_min(&g_stats.fwd),
 			       stamp_welford_mean(&g_stats.fwd),
 			       stamp_welford_max(&g_stats.fwd),
-			       stamp_welford_stddev(&g_stats.fwd));
+			       fmt_stddev_human(sd, sizeof(sd), &g_stats.fwd));
 			printf("Backward min/avg/max/jitter = "
-			       "%.3f/%.3f/%.3f/%.3f ms\n",
+			       "%.3f/%.3f/%.3f/%s ms\n",
 			       stamp_welford_min(&g_stats.bwd),
 			       stamp_welford_mean(&g_stats.bwd),
 			       stamp_welford_max(&g_stats.bwd),
-			       stamp_welford_stddev(&g_stats.bwd));
+			       fmt_stddev_human(sd, sizeof(sd), &g_stats.bwd));
 			print_ipdv("Forward ", &g_stats.ipdv_fwd);
 			print_ipdv("Backward", &g_stats.ipdv_bwd);
 		}
+		if (g_collect_samples && g_sample_oom_warned) {
+			// 上限到達/確保失敗でサンプルが欠落。count==0 のときは
+			// percentile/PDV 自体が出ないため、その旨も含め注記する
+			// （machine 出力の samples_truncated と意味を揃える）。
+			printf("Note: sample set truncated (limit reached); "
+			       "percentiles/PDV are partial or omitted\n");
+		}
 		if (g_collect_samples && g_samples.count > 0) {
-			if (g_sample_oom_warned) {
-				printf("Note: percentiles/PDV use a truncated "
-				       "sample set (sample limit reached)\n");
-			}
 			print_distribution("RTT     ",
 					   g_samples.rtt,
 					   g_samples.count);
@@ -1319,35 +1342,31 @@ static void set_recv_timeout(SOCKET sockfd, long sec, long usec)
 }
 
 /**
- * -w 締切の処理。経過時間が上限に達していれば true（ループ脱出）を返す。
- * 締切までの残りが既定タイムアウト未満なら recv タイムアウトを残り時間へ短縮し、
- * 応答ロス時に -w を大きく超過するのを防ぐ。単調クロックを用いる。
- * @param sockfd 送信ソケット
+ * -w 締切に達したか判定する純粋述語。締切未達なら締切までの残りミリ秒を
+ * *remain_ms_out へ返す。ソケット状態は変更しない（recv タイムアウトの短縮は
+ * 呼び出し側が remain_ms に基づき明示的に行う）。単調クロックを用いる。
+ * 単調クロックの取得に失敗した場合は締切未達として扱い（次回再試行）、残りには
+ * 既定タイムアウト相当を返して recv の短縮を抑止する（残り時間が不明なため）。
  * @param duration_ms 計測上限（ミリ秒）
  * @param start_ms 計測開始時刻（単調クロックのミリ秒値）
+ * @param remain_ms_out 締切までの残り（ミリ秒）。締切到達時は未設定
  * @return 締切到達で true
  */
-static bool sender_deadline_reached(SOCKET sockfd,
-				    uint64_t duration_ms,
-				    uint64_t start_ms)
+__attribute__((nonnull(3))) static bool
+sender_deadline_reached(uint64_t duration_ms,
+			uint64_t start_ms,
+			uint64_t *remain_ms_out)
 {
 	uint64_t now_ms;
 	if (!monotonic_now_ms(&now_ms)) {
-		return false; // 取得失敗時は締切判定をスキップ（次回再試行）
+		*remain_ms_out = (uint64_t)SOCKET_TIMEOUT_SEC * 1000U;
+		return false;
 	}
 	uint64_t elapsed = now_ms - start_ms;
 	if (elapsed >= duration_ms) {
 		return true;
 	}
-	uint64_t remain_ms = duration_ms - elapsed;
-	if (remain_ms < (uint64_t)SOCKET_TIMEOUT_SEC * 1000U) {
-		// -w は ping -w と同様のハード締切。残り時間で recv を打ち切るため、
-		// 締切直前に送った最後の応答が締切後に到着すると 1 本だけ timeout
-		// （= loss）として計上されうる（境界効果・計測長が伸びるほど軽微）。
-		set_recv_timeout(sockfd,
-				 (long)(remain_ms / 1000U),
-				 (long)(remain_ms % 1000U) * 1000L);
-	}
+	*remain_ms_out = duration_ms - elapsed;
 	return false;
 }
 
@@ -1385,9 +1404,25 @@ run_measurement_loop(SOCKET sockfd, const struct sender_options *opts)
 	while (__atomic_load_n(&g_running, __ATOMIC_SEQ_CST)) {
 		// -w 締切判定（ブロッキング受信の前に判定し、recv タイムアウトを
 		// 残り時間へ詰める）
-		if (opts->duration_sec != 0 &&
-		    sender_deadline_reached(sockfd, duration_ms, start_ms)) {
-			break;
+		if (opts->duration_sec != 0) {
+			uint64_t remain_ms;
+			if (sender_deadline_reached(duration_ms,
+						    start_ms,
+						    &remain_ms)) {
+				break;
+			}
+			// 締切までの残りが既定タイムアウト未満なら recv を残り時間へ
+			// 短縮する。-w は ping -w と同様のハード締切のため、締切後に
+			// 到着した応答は受信されず timeout（= loss）として計上される。
+			// 送信間隔(1s)より RTT が大きい高遅延経路では、最終ウィンドウ内の
+			// 複数本がこの境界効果を受けうる（影響本数は概ね RTT/送信間隔に
+			// 比例。計測長が伸びるほど全体に占める割合は小さくなる）。
+			if (remain_ms < (uint64_t)SOCKET_TIMEOUT_SEC * 1000U) {
+				set_recv_timeout(sockfd,
+						 (long)(remain_ms / 1000U),
+						 (long)(remain_ms % 1000U) *
+							 1000L);
+			}
 		}
 
 		uint32_t real_t1_sec = 0;
