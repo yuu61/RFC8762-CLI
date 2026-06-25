@@ -12,17 +12,11 @@ on:
       - '.clang-tidy'
       - '.cppcheck-suppressions'
       - '.github/workflows/ci.yml'
+  # PR では paths フィルタを付けない。必須ステータスチェックに設定している
+  # ため、paths でワークフローがスキップされるとチェックが報告されず、PR が
+  # "Expected — Waiting for status to report" のままマージ不能になるのを防ぐ。
   pull_request:
     branches: [main]
-    paths:
-      - 'src/**'
-      - 'tests/**'
-      - 'CMakeLists.txt'
-      - 'CMakePresets.json'
-      - '.clang-format'
-      - '.clang-tidy'
-      - '.cppcheck-suppressions'
-      - '.github/workflows/ci.yml'
 
 jobs:
   lint:

@@ -8,13 +8,11 @@ on:
       - 'tests/**'
       - 'CMakeLists.txt'
       - '.github/workflows/codeql.yml'
+  # PR では paths フィルタを付けない。必須ステータスチェックに設定している
+  # ため、paths でワークフローがスキップされるとチェックが報告されず、PR が
+  # マージ不能になるのを防ぐ（ブランチ保護のゲートを確実に機能させる）。
   pull_request:
     branches: [main]
-    paths:
-      - 'src/**'
-      - 'tests/**'
-      - 'CMakeLists.txt'
-      - '.github/workflows/codeql.yml'
 
 jobs:
   codeql:
