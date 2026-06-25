@@ -3094,6 +3094,11 @@ static void test_stamp_report_fmt_double(void)
 	EXPECT_TRUE(buf[0] == '\0', "fmt NaN → empty");
 	stamp_report_fmt_double(buf, sizeof(buf), INFINITY, 3);
 	EXPECT_TRUE(buf[0] == '\0', "fmt Inf → empty");
+	// 有限でも表示フィールド(32)に収まらない巨大値は欠損(空文字)扱い
+	stamp_report_fmt_double(buf, sizeof(buf), 1e300, 6);
+	EXPECT_TRUE(buf[0] == '\0', "fmt huge finite → empty");
+	stamp_report_fmt_double(buf, sizeof(buf), -1e300, 3);
+	EXPECT_TRUE(buf[0] == '\0', "fmt huge negative → empty");
 }
 
 static void test_stamp_report_json_escape(void)

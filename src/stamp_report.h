@@ -14,8 +14,14 @@
 #define STAMP_REPORT_STR_MAX 128
 // ISO8601 UTC タイムスタンプ "YYYY-MM-DDTHH:MM:SSZ" + NUL
 #define STAMP_REPORT_TS_MAX 24
-// 数値整形バッファ長
+// 数値整形バッファ長（表示フィールド幅。収まらない値は欠損扱い）
 #define STAMP_REPORT_NUM_MAX 32
+// double を "%.6f" で整形した際の最悪ケース長。-DBL_MAX は整数部 309 桁で、
+// 符号 + '.' + 小数 6 桁 + NUL を加えても 318 バイト。512 で十分な余裕を持つ。
+// snprintf の出力先を常にこのサイズの一時バッファにすることで、最適化構成に
+// 依存せず -Wformat-truncation=2 を確実に黙らせる（表示フィールドへは長さ検査
+// 後にコピー）。
+#define STAMP_REPORT_DOUBLE_MAX 512
 
 // 出力形式
 enum output_format {
@@ -91,22 +97,33 @@ stamp_report_iso8601_utc(char *buf, size_t buflen)
 __attribute__((nonnull(1))) static inline void
 stamp_report_fmt_double(char *buf, size_t buflen, double v, int prec)
 {
+	if (buflen == 0) {
+		return;
+	}
 	if (!isfinite(v)) {
 		buf[0] = '\0';
 		return;
 	}
-	int written = (prec == 6) ? snprintf(buf, buflen, "%.6f", v)
-				  : snprintf(buf, buflen, "%.3f", v);
+	// 最悪ケース（-DBL_MAX を "%.6f"）でも切り詰めが起きない十分大きな一時
+	// バッファに整形する。これにより snprintf 自体は構成に依らず非切り詰めと
+	// なり、-Wformat-truncation=2 が誤検知しない。表示フィールド buf には
+	// 長さ検査を通った場合のみコピーする。
+	char tmp[STAMP_REPORT_DOUBLE_MAX];
+	int written = (prec == 6) ? snprintf(tmp, sizeof(tmp), "%.6f", v)
+				  : snprintf(tmp, sizeof(tmp), "%.3f", v);
 	if (written < 0 || (size_t)written >= buflen) {
+		// 表示フィールドに収まらない値は欠損（空文字）扱い
 		buf[0] = '\0';
 		return;
 	}
 	// ロケールが ',' を小数点に使う環境でも '.' に正規化する
-	for (char *p = buf; *p != '\0'; p++) {
+	for (char *p = tmp; *p != '\0'; p++) {
 		if (*p == ',') {
 			*p = '.';
 		}
 	}
+	// written < buflen が保証済みなので written + 1 <= buflen（NUL 込みで安全）
+	memcpy(buf, tmp, (size_t)written + 1);
 }
 
 /**
